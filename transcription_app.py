@@ -13,6 +13,8 @@ from tkinter import Tk, Label, Button, Checkbutton, IntVar, StringVar, Frame, Op
 from tkinterdnd2 import DND_FILES, TkinterDnD
 from faster_whisper import WhisperModel
 import pyperclip
+from pydub import AudioSegment
+import mimetypes
 
 class CombinedTranscriptionApp:
     def __init__(self, root):
@@ -31,7 +33,7 @@ class CombinedTranscriptionApp:
         self.copy_to_clipboard = IntVar(value=1)
         self.hotkey = StringVar(value="ctrl+shift+;")
         self.compute_type = StringVar(value="float16")
-        self.model_size = StringVar(value="distil-large-v3")
+        self.model_size = StringVar(value="tiny")
         
         # Recording variables
         self.recording = False
@@ -88,7 +90,7 @@ class CombinedTranscriptionApp:
         
         Label(file_frame, text="File/Folder Transcription", bg='#121212', fg='white', font=("Arial", 10, "bold")).pack(pady=5)
         
-        Label(file_frame, text="Drag and drop .wav files or folders here", bg='#121212', fg='white').pack(pady=5)
+        Label(file_frame, text="Drag and drop audio/video files or folders here", bg='#121212', fg='white').pack(pady=5)
         
         button_frame = Frame(file_frame, bg='#121212')
         button_frame.pack(pady=5)
@@ -207,7 +209,9 @@ class CombinedTranscriptionApp:
         self.update_status(f"Registered hotkey: {current_hotkey}")
     
     def open_file_dialog(self):
-        file_path = filedialog.askopenfilename(filetypes=[("WAV files", "*.wav")])
+        file_path = filedialog.askopenfilename(filetypes=[
+            ("Audio/Video files", "*.wav *.mp3 *.m4a *.mp4 *.avi *.mov *.ogg *.flac *.aac")
+        ])
         if file_path:
             self.transcribe_file(file_path)
     
@@ -221,10 +225,36 @@ class CombinedTranscriptionApp:
         for file_path in file_paths:
             if os.path.isdir(file_path):
                 self.transcribe_folder(file_path)
-            elif file_path.endswith('.wav'):
+            elif self.is_valid_media_file(file_path):
                 self.transcribe_file(file_path)
             else:
-                messagebox.showerror("Error", "Only .wav files and folders are supported")
+                messagebox.showerror("Error", "Unsupported file format")
+    
+    def is_valid_media_file(self, file_path):
+        """Check if the file is a supported audio/video format"""
+        valid_extensions = {'.wav', '.mp3', '.m4a', '.mp4', '.avi', '.mov', '.ogg', '.flac', '.aac'}
+        return os.path.splitext(file_path)[1].lower() in valid_extensions
+    
+    def convert_to_wav(self, input_file):
+        """Convert any audio/video file to WAV format"""
+        try:
+            self.update_status(f"Converting {os.path.basename(input_file)} to WAV...")
+            
+            # Create temp file
+            temp_file = tempfile.NamedTemporaryFile(delete=False, suffix='.wav')
+            temp_wav_path = temp_file.name
+            temp_file.close()
+            
+            # Convert file using pydub
+            audio = AudioSegment.from_file(input_file)
+            audio = audio.set_channels(1)  # Convert to mono
+            audio = audio.set_frame_rate(16000)  # Set sample rate to 16kHz
+            audio.export(temp_wav_path, format="wav")
+            
+            return temp_wav_path
+        except Exception as e:
+            self.update_status(f"Error converting file: {str(e)}")
+            raise
     
     def transcribe_file(self, file_path):
         if self.model is None:
@@ -240,8 +270,18 @@ class CombinedTranscriptionApp:
     def _transcribe_file(self, file_path):
         try:
             start_time = time.time()
-            segments, info = self.model.transcribe(file_path, beam_size=5)
             
+            # Convert file to WAV if it's not already
+            temp_wav_path = None
+            if not file_path.lower().endswith('.wav'):
+                temp_wav_path = self.convert_to_wav(file_path)
+                file_to_transcribe = temp_wav_path
+            else:
+                file_to_transcribe = file_path
+            
+            segments, info = self.model.transcribe(file_to_transcribe, beam_size=5)
+            
+            # Create output file path based on original file
             output_file_name = os.path.splitext(file_path)[0] + "_transcribed.txt"
             transcript = ""
             
@@ -283,9 +323,21 @@ class CombinedTranscriptionApp:
             #     except Exception as e:
             #         self.update_status(f"Failed to open file: {str(e)}")
             
+            # Clean up temporary file if created
+            if temp_wav_path:
+                try:
+                    os.unlink(temp_wav_path)
+                except:
+                    pass
+            
         except Exception as e:
             self.update_status(f"Error transcribing: {str(e)}")
             messagebox.showerror("Error", f"Failed to transcribe: {str(e)}")
+            if temp_wav_path:
+                try:
+                    os.unlink(temp_wav_path)
+                except:
+                    pass
     
     def clean_text_file(self, file_path):
         """
@@ -322,22 +374,22 @@ class CombinedTranscriptionApp:
         self.update_status(f"Transcribing folder: {folder_path}")
     
     def _transcribe_folder(self, folder_path):
-        wav_files = []
+        media_files = []
         for root, dirs, files in os.walk(folder_path):
             for file in files:
-                if file.endswith('.wav'):
-                    wav_files.append(os.path.join(root, file))
+                if self.is_valid_media_file(file):
+                    media_files.append(os.path.join(root, file))
         
-        if not wav_files:
-            self.update_status("No WAV files found in the folder")
+        if not media_files:
+            self.update_status("No supported audio/video files found in the folder")
             return
         
-        self.update_status(f"Found {len(wav_files)} WAV files to transcribe")
+        self.update_status(f"Found {len(media_files)} media files to transcribe")
         
-        for i, file_path in enumerate(wav_files):
+        for i, file_path in enumerate(media_files):
             if self.stop_transcription:
                 return
-            self.update_status(f"Transcribing {i+1}/{len(wav_files)}: {os.path.basename(file_path)}")
+            self.update_status(f"Transcribing {i+1}/{len(media_files)}: {os.path.basename(file_path)}")
             self._transcribe_file(file_path)
     
     def record_audio(self):
