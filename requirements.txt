@@ -6,3 +6,4 @@ faster-whisper
 pyperclip
 keyboard
 tkinterdnd2
+pydub
