@@ -1,9 +1,9 @@
-numpy
-torch
+keyboard
 sounddevice
 soundfile
+numpy
+torch
+tkinterdnd2
 faster-whisper
 pyperclip
-keyboard
-tkinterdnd2
 pydub
