@@ -9,7 +9,7 @@ import sounddevice as sd
 import soundfile as sf
 import numpy as np
 import torch
-from tkinter import Tk, Label, Button, Checkbutton, IntVar, StringVar, Frame, OptionMenu, filedialog, messagebox
+from tkinter import Tk, Label, Button, Checkbutton, IntVar, StringVar, Frame, OptionMenu, filedialog, messagebox, Text, Scrollbar
 from tkinterdnd2 import DND_FILES, TkinterDnD
 from faster_whisper import WhisperModel
 import pyperclip
@@ -20,7 +20,7 @@ class CombinedTranscriptionApp:
     def __init__(self, root):
         self.root = root
         self.root.title("Antistentorian")
-        self.root.geometry("600x510")
+        self.root.geometry("600x600")  # Reduced height
         self.root.configure(bg='#121212')
         
         # Initialize status_label before calling update_status
@@ -33,7 +33,7 @@ class CombinedTranscriptionApp:
         self.copy_to_clipboard = IntVar(value=1)
         self.hotkey = StringVar(value="ctrl+shift+;")
         self.compute_type = StringVar(value="float16")
-        self.model_size = StringVar(value="tiny")
+        self.model_size = StringVar(value="distil-large-v3")
         
         # Recording variables
         self.recording = False
@@ -45,6 +45,7 @@ class CombinedTranscriptionApp:
         self.transcription_thread = None
         self.stop_transcription = False
         self.model = None
+        self.model_loaded = False  # Add this line
         
         # Check GPU availability
         self.has_gpu = self.check_gpu()
@@ -52,12 +53,23 @@ class CombinedTranscriptionApp:
         
         # Main frame
         main_frame = Frame(root, bg='#121212')
-        main_frame.pack(pady=10, padx=20, fill="both", expand=True)
+        main_frame.pack(pady=5, padx=10, fill="both", expand=True)
         
-        # Create UI sections
-        self.create_file_section(main_frame)
-        self.create_recording_section(main_frame)
-        self.create_settings_section(main_frame)
+        # Create top control panel
+        top_panel = Frame(main_frame, bg='#121212')
+        top_panel.pack(fill="x", pady=2)
+        
+        # Split into left and right sections
+        left_panel = Frame(top_panel, bg='#121212')
+        left_panel.pack(side="left", fill="x", expand=True)
+        
+        right_panel = Frame(top_panel, bg='#121212')
+        right_panel.pack(side="right", fill="x", expand=True)
+        
+        # Create UI sections in new layout
+        self.create_input_section(left_panel)  # Combined file and recording controls
+        self.create_settings_section(right_panel)  # Compact settings
+        self.create_text_output_section(main_frame)  # Keeps original size
         self.create_control_section(main_frame)
         
         # Set up drag and drop
@@ -84,90 +96,105 @@ class CombinedTranscriptionApp:
             self.update_status("No GPU found. Using CPU.")
             return False
     
-    def create_file_section(self, parent):
-        file_frame = Frame(parent, bg='#121212', bd=2, relief="groove")
-        file_frame.pack(fill="x", pady=5)
+    def create_input_section(self, parent):
+        """Combined file, recording and download controls"""
+        input_frame = Frame(parent, bg='#121212', bd=2, relief="groove")
+        input_frame.pack(fill="x", padx=5, pady=2)
         
-        Label(file_frame, text="File/Folder Transcription", bg='#121212', fg='white', font=("Arial", 10, "bold")).pack(pady=5)
+        # File controls
+        file_frame = Frame(input_frame, bg='#121212')
+        file_frame.pack(fill="x", pady=2)
         
-        Label(file_frame, text="Drag and drop audio/video files or folders here", bg='#121212', fg='white').pack(pady=5)
+        Label(file_frame, text="Input", bg='#121212', fg='white', 
+              font=("Arial", 10, "bold")).pack(side="left", padx=5)
         
-        button_frame = Frame(file_frame, bg='#121212')
-        button_frame.pack(pady=5)
+        Button(file_frame, text="Open File", command=self.open_file_dialog,
+               bg='#3700B3', fg='white').pack(side="left", padx=2)
+        Button(file_frame, text="Open Folder", command=self.open_folder_dialog,
+               bg='#3700B3', fg='white').pack(side="left", padx=2)
         
-        Button(button_frame, text="Open File", command=self.open_file_dialog, bg='#3700B3', fg='white').pack(side="left", padx=5)
-        Button(button_frame, text="Open Folder", command=self.open_folder_dialog, bg='#3700B3', fg='white').pack(side="left", padx=5)
-    
-    def create_recording_section(self, parent):
-        record_frame = Frame(parent, bg='#121212', bd=2, relief="groove")
-        record_frame.pack(fill="x", pady=5)
+        # Keep Download Transcript button
+        Button(file_frame, text="Download Transcript", command=self.download_transcript,
+               bg='#3700B3', fg='white').pack(side="left", padx=2)
         
-        Label(record_frame, text="Real-time Transcription", bg='#121212', fg='white', font=("Arial", 10, "bold")).pack(pady=5)
+        # Recording controls
+        record_frame = Frame(input_frame, bg='#121212')
+        record_frame.pack(fill="x", pady=2)
         
-        hotkey_frame = Frame(record_frame, bg='#121212')
-        hotkey_frame.pack(pady=5)
+        Label(record_frame, text="Record", bg='#121212', fg='white').pack(side="left", padx=5)
         
-        Label(hotkey_frame, text="Hotkey:", bg='#121212', fg='white').pack(side="left", padx=5)
-        hotkey_options = ["ctrl+shift+;", "ctrl+shift+r", "alt+r", "ctrl+space"]
-        hotkey_menu = OptionMenu(hotkey_frame, self.hotkey, *hotkey_options)
+        hotkey_menu = OptionMenu(record_frame, self.hotkey, 
+                               "ctrl+shift+;", "ctrl+shift+r", "alt+r", "ctrl+space")
         hotkey_menu.config(bg='#3700B3', fg='white')
         hotkey_menu["menu"].config(bg='#3700B3', fg='white')
-        hotkey_menu.pack(side="left", padx=5)
+        hotkey_menu.pack(side="left", padx=2)
         
-        Button(hotkey_frame, text="Update Hotkey", command=self.register_hotkey, bg='#3700B3', fg='white').pack(side="left", padx=5)
+        Button(record_frame, text="Start/Stop", command=self.toggle_recording,
+               bg='#3700B3', fg='white').pack(side="left", padx=2)
         
-        Button(record_frame, text="Start/Stop Recording", command=self.toggle_recording, bg='#3700B3', fg='white').pack(pady=5)
-        
-        self.recording_status = Label(record_frame, text="Not Recording", bg='#121212', fg='white')
-        self.recording_status.pack(pady=5)
-    
+        self.recording_status = Label(record_frame, text="Ready", 
+                                    bg='#121212', fg='white')
+        self.recording_status.pack(side="left", padx=5)
+
     def create_settings_section(self, parent):
+        """Compact settings panel"""
         settings_frame = Frame(parent, bg='#121212', bd=2, relief="groove")
-        settings_frame.pack(fill="x", pady=5)
+        settings_frame.pack(fill="x", padx=5, pady=2)
         
-        Label(settings_frame, text="Settings", bg='#121212', fg='white', font=("Arial", 10, "bold")).pack(pady=5)
+        # Top row - Model settings
+        top_row = Frame(settings_frame, bg='#121212')
+        top_row.pack(fill="x", pady=2)
         
-        options_frame = Frame(settings_frame, bg='#121212')
-        options_frame.pack(pady=5)
-        
-        # Left column
-        left_col = Frame(options_frame, bg='#121212')
-        left_col.pack(side="left", padx=10)
-        
-        Checkbutton(left_col, text="Include Timestamps", variable=self.include_timestamps, 
-                   bg='#121212', fg='white', selectcolor='#121212').pack(anchor="w")
-        
-        Checkbutton(left_col, text="Open File After", variable=self.open_file_after, 
-                   bg='#121212', fg='white', selectcolor='#121212').pack(anchor="w")
-        
-        Checkbutton(left_col, text="Copy to Clipboard", variable=self.copy_to_clipboard, 
-                   bg='#121212', fg='white', selectcolor='#121212').pack(anchor="w")
-        
-        # Right column
-        right_col = Frame(options_frame, bg='#121212')
-        right_col.pack(side="left", padx=10)
-        
-        model_frame = Frame(right_col, bg='#121212')
-        model_frame.pack(anchor="w", fill="x")
-        
-        Label(model_frame, text="Model:", bg='#121212', fg='white').pack(side="left")
-        model_options = ["tiny", "base", "small", "medium", "large-v1", "large-v2", "large-v3", "distil-large-v3"]
-        model_menu = OptionMenu(model_frame, self.model_size, *model_options)
+        Label(top_row, text="Model:", bg='#121212', fg='white').pack(side="left", padx=2)
+        model_menu = OptionMenu(top_row, self.model_size, 
+                              *["tiny", "base", "small", "medium", "large-v3", "distil-large-v3"])
         model_menu.config(bg='#3700B3', fg='white')
         model_menu["menu"].config(bg='#3700B3', fg='white')
-        model_menu.pack(side="left", padx=5)
+        model_menu.pack(side="left", padx=2)
         
-        compute_frame = Frame(right_col, bg='#121212')
-        compute_frame.pack(anchor="w", fill="x", pady=5)
+        Button(top_row, text="Load", command=self.reload_model,
+               bg='#3700B3', fg='white').pack(side="right", padx=2)
+        Button(top_row, text="Unload", command=self.unload_model,
+               bg='#3700B3', fg='white').pack(side="right", padx=2)
         
-        Label(compute_frame, text="Compute:", bg='#121212', fg='white').pack(side="left")
-        compute_options = ["float16", "int8", "int8_float16"]
-        compute_menu = OptionMenu(compute_frame, self.compute_type, *compute_options)
-        compute_menu.config(bg='#3700B3', fg='white')
-        compute_menu["menu"].config(bg='#3700B3', fg='white')
-        compute_menu.pack(side="left", padx=5)
+        # Bottom row - Checkbuttons
+        bottom_row = Frame(settings_frame, bg='#121212')
+        bottom_row.pack(fill="x", pady=2)
         
-        Button(right_col, text="Apply Settings", command=self.reload_model, bg='#3700B3', fg='white').pack(pady=5)
+        Checkbutton(bottom_row, text="Timestamps", variable=self.include_timestamps,
+                   bg='#121212', fg='white', selectcolor='#121212').pack(side="left", padx=2)
+        Checkbutton(bottom_row, text="Copy", variable=self.copy_to_clipboard,
+                   bg='#121212', fg='white', selectcolor='#121212').pack(side="left", padx=2)
+
+    def create_text_output_section(self, parent):
+        # Create a frame for text output section
+        text_frame = Frame(parent, bg='#121212', bd=2, relief="groove")
+        text_frame.pack(fill="both", expand=True, pady=5)
+        
+        # Add a label
+        Label(text_frame, text="Transcription Output", bg='#121212', fg='white', font=("Arial", 10, "bold")).pack(pady=5)
+        
+        # Create a frame for the text box and scrollbar
+        text_box_frame = Frame(text_frame, bg='#121212')
+        text_box_frame.pack(fill="both", expand=True, padx=5, pady=5)
+        
+        # Add a scrollbar
+        scrollbar = Scrollbar(text_box_frame)
+        scrollbar.pack(side="right", fill="y")
+        
+        # Add a text box with dark theme colors
+        self.output_text = Text(text_box_frame, bg='#1E1E1E', fg='#FFFFFF', insertbackground='white',
+                               wrap="word", yscrollcommand=scrollbar.set)
+        self.output_text.pack(side="left", fill="both", expand=True)
+        scrollbar.config(command=self.output_text.yview)
+        
+        # Buttons for text operations
+        button_frame = Frame(text_frame, bg='#121212')
+        button_frame.pack(fill="x", pady=5)
+        
+        Button(button_frame, text="Copy All", command=self.copy_all_text, bg='#3700B3', fg='white').pack(side="left", padx=5)
+        Button(button_frame, text="Clear", command=self.clear_text, bg='#3700B3', fg='white').pack(side="left", padx=5)
+        Button(button_frame, text="Save As...", command=self.save_text_as, bg='#3700B3', fg='white').pack(side="left", padx=5)
     
     def create_control_section(self, parent):
         control_frame = Frame(parent, bg='#121212')
@@ -180,11 +207,42 @@ class CombinedTranscriptionApp:
         self.status_label.config(text=message)
         self.root.update_idletasks()
     
+    def copy_all_text(self):
+        """Copy all text from output_text to clipboard"""
+        text_content = self.output_text.get("1.0", "end-1c")
+        if text_content:
+            pyperclip.copy(text_content)
+            self.update_status("Text copied to clipboard")
+        else:
+            self.update_status("No text to copy")
+    
+    def clear_text(self):
+        """Clear the text box"""
+        self.output_text.delete("1.0", "end")
+        self.update_status("Text cleared")
+    
+    def save_text_as(self):
+        """Save the text content to a file"""
+        text_content = self.output_text.get("1.0", "end-1c")
+        if not text_content:
+            self.update_status("No text to save")
+            return
+            
+        file_path = filedialog.asksaveasfilename(
+            defaultextension=".txt",
+            filetypes=[("Text files", "*.txt"), ("All files", "*.*")])
+            
+        if file_path:
+            with open(file_path, 'w', encoding='utf-8') as f:
+                f.write(text_content)
+            self.update_status(f"Text saved to {os.path.basename(file_path)}")
+    
     def load_model(self):
         try:
             self.update_status(f"Loading model {self.model_size.get()} on {self.device}...")
             compute_type = self.compute_type.get()
             self.model = WhisperModel(self.model_size.get(), device=self.device, compute_type=compute_type)
+            self.model_loaded = True  # Add this line
             self.update_status("Model loaded successfully.")
         except Exception as e:
             self.update_status(f"Error loading model: {str(e)}")
@@ -303,27 +361,23 @@ class CombinedTranscriptionApp:
             
             # Clean the output text file
             self.clean_text_file(output_file_name)
+            
+            # Reload the cleaned file to get the final transcript
+            with open(output_file_name, 'r', encoding='utf-8') as f:
+                cleaned_transcript = f.read()
+            
+            # Display transcript in the text box
+            self.output_text.delete("1.0", "end")
+            self.output_text.insert("1.0", cleaned_transcript)
 
             end_time = time.time()
             self.update_status(f"Transcription completed in {end_time - start_time:.2f} seconds")
             
             if self.copy_to_clipboard.get():
-                pyperclip.copy(transcript)
+                pyperclip.copy(cleaned_transcript)
                 self.update_status("Transcription copied to clipboard")
             
-            # Remove the default behavior of opening the file after transcription
-            # if self.open_file_after.get():
-            #     try:
-            #         if sys.platform == 'win32':
-            #             os.startfile(output_file_name)
-            #         elif sys.platform == 'darwin':  # macOS
-            #             subprocess.call(['open', output_file_name])
-            #         else:  # Linux
-            #             subprocess.call(['xdg-open', output_file_name])
-            #     except Exception as e:
-            #         self.update_status(f"Failed to open file: {str(e)}")
-            
-            # Clean up temporary file if created
+            # Remove the temporary file if created
             if temp_wav_path:
                 try:
                     os.unlink(temp_wav_path)
@@ -438,13 +492,26 @@ class CombinedTranscriptionApp:
 
     def play_stop_sound(self):
         """Play a sound cue for stopping recording."""
-        # Uncomment the following lines to enable a custom stop sound
+        ################# Uncomment the following lines to enable a custom stop sound##################
         # data, samplerate = sf.read('stop_sound.wav')  # Load the stop sound
         # sd.play(data, samplerate)  # Play the sound
         # sd.wait()  # Wait until sound has finished playing
         print("Stop sound not enabled. You can uncomment the code to enable it.")
 
+    def ensure_model_loaded(self):
+        """Ensure the model is loaded before transcription"""
+        if not self.model_loaded:
+            self.update_status("Model not loaded. Loading model...")
+            self.load_model()
+            return self.model_loaded
+        return True
+
     def toggle_recording(self):
+        # Ensure model is loaded before recording
+        if not self.ensure_model_loaded():
+            self.update_status("Failed to load model. Cannot start recording.")
+            return
+
         if self.model is None:
             self.update_status("Model not loaded yet. Please wait.")
             return
@@ -492,6 +559,15 @@ class CombinedTranscriptionApp:
             
             end_time = time.time()
             
+            # Clean up the transcript
+            cleaned_transcript = transcript.replace('\n', ' ').replace('  ', ' ').strip()
+            if not cleaned_transcript.endswith('.'):
+                cleaned_transcript += '.'
+            
+            # Update text box with the transcript
+            self.output_text.delete("1.0", "end")
+            self.output_text.insert("1.0", cleaned_transcript)
+            
             # Save transcript to file
             timestamp = time.strftime("%Y%m%d-%H%M%S")
             output_dir = os.path.join(os.path.expanduser("~"), "Whisper_Transcriptions")
@@ -499,11 +575,11 @@ class CombinedTranscriptionApp:
             output_file = os.path.join(output_dir, f"recorded_transcript_{timestamp}.txt")
             
             with open(output_file, 'w', encoding='utf-8') as f:
-                f.write(transcript)
+                f.write(cleaned_transcript)
             
             # Copy to clipboard if enabled
             if self.copy_to_clipboard.get():
-                pyperclip.copy(transcript)
+                pyperclip.copy(cleaned_transcript)
             
             # Clean up temporary file
             os.unlink(audio_file)
@@ -524,6 +600,191 @@ class CombinedTranscriptionApp:
         
         self.update_status("Operation cancelled")
         messagebox.showinfo("Info", "Operation cancelled")
+
+    def unload_model(self):
+        """Unload the Whisper model to free up memory"""
+        if self.model is not None:
+            self.model = None
+            self.model_loaded = False
+            torch.cuda.empty_cache()  # Clear CUDA cache if using GPU
+            self.update_status("Model unloaded successfully")
+        else:
+            self.update_status("No model is currently loaded")
+
+    def open_subtitle_dialog(self):
+        """Open a file dialog for subtitle files and convert them"""
+        file_path = filedialog.askopenfilename(filetypes=[
+            ("Subtitle files", "*.vtt *.ttml")
+        ])
+        if file_path:
+            self.convert_subtitle_file(file_path)
+
+    def convert_subtitle_file(self, file_path):
+        """Convert VTT or TTML subtitle file into a text transcript internally"""
+        ext = os.path.splitext(file_path)[1].lower()
+        output_file = None
+        if ext == ".ttml":
+            self.update_status("Converting TTML subtitle file internally...")
+            output_file = self._convert_ttml_to_text(file_path)
+        elif ext == ".vtt":
+            self.update_status("Converting VTT subtitle file internally...")
+            output_file = self._convert_vtt_to_text(file_path)
+        else:
+            messagebox.showerror("Error", "Unsupported subtitle format.")
+            return
+
+        if output_file and os.path.exists(output_file):
+            with open(output_file, "r", encoding="utf-8") as f:
+                content = f.read()
+            self.output_text.delete("1.0", "end")
+            self.output_text.insert("1.0", content)
+            self.update_status("Subtitle conversion completed.")
+        else:
+            self.update_status("Conversion failed: output file not found.")
+
+    def download_transcript(self):
+        """Download subtitle from YouTube and convert to text with video title as name into a Transcripts folder"""
+        from tkinter import simpledialog
+        import glob
+        youtube_url = simpledialog.askstring("Download Transcript", "Enter the YouTube video URL:")
+        if not youtube_url:
+            return
+
+        self.update_status("Downloading subtitle...")
+        import subprocess
+
+        # Create 'Transcripts' directory in working directory
+        transcripts_dir = os.path.join(os.getcwd(), "Transcripts")
+        os.makedirs(transcripts_dir, exist_ok=True)
+
+        output_template = os.path.join(transcripts_dir, "%(title)s.%(ext)s")
+
+        # First try downloading TTML subtitles
+        ttml_cmd = [
+            "yt-dlp",
+            "--skip-download",
+            "--write-subs",
+            "--write-auto-subs",
+            "--sub-lang", "en",
+            "--sub-format", "ttml",
+            "--output", output_template,
+            youtube_url
+        ]
+        try:
+            subprocess.check_call(ttml_cmd)
+        except Exception as e:
+            self.update_status(f"Error downloading TTML subtitles: {e}")
+            return
+
+        # Search for downloaded subtitle files in the Transcripts directory
+        ttml_files = glob.glob(os.path.join(transcripts_dir, "*.en.ttml"))
+        vtt_files = glob.glob(os.path.join(transcripts_dir, "*.en.vtt"))
+        output_file = None
+
+        if ttml_files:
+            ttml_file = ttml_files[0]
+            self.update_status("TTML subtitles downloaded. Converting internally...")
+            output_file = self._convert_ttml_to_text(ttml_file)
+            if output_file:
+                os.remove(ttml_file)  # cleanup
+            else:
+                return
+        elif vtt_files:
+            vtt_file = vtt_files[0]
+            self.update_status("TTML subtitles not found. Converting VTT subtitles internally...")
+            output_file = self._convert_vtt_to_text(vtt_file)
+            if output_file:
+                os.remove(vtt_file)  # cleanup
+            else:
+                return
+        else:
+            self.update_status("No subtitles found. Please check availability.")
+            return
+
+        # Read and display transcript
+        if os.path.exists(output_file):
+            with open(output_file, "r", encoding="utf-8") as f:
+                content = f.read()
+            self.output_text.delete("1.0", "end")
+            self.output_text.insert("1.0", content)
+            self.update_status("Transcript downloaded and converted successfully.")
+            # Optionally copy to clipboard if enabled
+            if self.copy_to_clipboard.get():
+                pyperclip.copy(content)
+        else:
+            self.update_status("Transcript conversion failed: output file not found.")
+
+    def _convert_ttml_to_text(self, ttml_file):
+        """Converts a TTML subtitle file to a text transcript."""
+        import xml.etree.ElementTree as ET
+        try:
+            tree = ET.parse(ttml_file)
+            root = tree.getroot()
+            segments = []
+            include_ts = bool(self.include_timestamps.get())
+            for elem in root.iter():
+                if elem.tag.endswith('p'):
+                    text = elem.text.strip() if elem.text else ""
+                    if include_ts:
+                        begin = elem.get('begin', '')
+                        end = elem.get('end', '')
+                        if begin and end:
+                            segment = f"[{begin} -> {end}] {text}"
+                        else:
+                            segment = text
+                    else:
+                        segment = text
+                    segment = segment.rstrip()
+                    # Only add a period if there are multiple words and it doesn't end with punctuation.
+                    if segment and segment[-1] not in ".!?" and len(segment.split()) > 1:
+                        segment += "."
+                    segments.append(segment)
+            # New line separation when timestamps are included; otherwise use one block.
+            transcript = "\n".join(segments) if include_ts else " ".join(segments)
+            output_file = os.path.splitext(ttml_file)[0] + ".txt"
+            with open(output_file, "w", encoding="utf-8") as f:
+                f.write(transcript)
+            return output_file
+        except Exception as e:
+            self.update_status(f"Error converting TTML subtitles: {e}")
+            return None
+
+    def _convert_vtt_to_text(self, vtt_file):
+        """Converts a VTT subtitle file to a text transcript."""
+        try:
+            with open(vtt_file, "r", encoding="utf-8") as f:
+                lines = f.readlines()
+            segments = []
+            include_ts = bool(self.include_timestamps.get())
+            current_timestamp = ""
+            for line in lines:
+                line = line.strip()
+                # Skip header lines
+                if not line or line.upper().startswith("WEBVTT"):
+                    continue
+                if "-->" in line:
+                    current_timestamp = line
+                    continue
+                if line.isdigit():
+                    continue
+                if include_ts and current_timestamp:
+                    segment = f"[{current_timestamp}] {line}"
+                    current_timestamp = ""
+                else:
+                    segment = line
+                segment = segment.rstrip()
+                # Only add a period if there are multiple words and it doesn't already end with punctuation.
+                if segment and segment[-1] not in ".!?" and len(segment.split()) > 1:
+                    segment += "."
+                segments.append(segment)
+            transcript = "\n".join(segments) if include_ts else " ".join(segments)
+            output_file = os.path.splitext(vtt_file)[0] + ".txt"
+            with open(output_file, "w", encoding="utf-8") as f:
+                f.write(transcript)
+            return output_file
+        except Exception as e:
+            self.update_status(f"Error converting VTT subtitles: {e}")
+            return None
 
 if __name__ == "__main__":
     # Set numpy multithreading limit to avoid conflicts with PyTorch
