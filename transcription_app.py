@@ -33,7 +33,7 @@ class CombinedTranscriptionApp:
         self.copy_to_clipboard = IntVar(value=1)
         self.hotkey = StringVar(value="ctrl+shift+;")
         self.compute_type = StringVar(value="float16")
-        self.model_size = StringVar(value="distil-large-v3")
+        self.model_size = StringVar(value="tiny")
         
         # Recording variables
         self.recording = False
