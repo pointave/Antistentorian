@@ -33,7 +33,7 @@ class CombinedTranscriptionApp:
         self.copy_to_clipboard = IntVar(value=1)
         self.hotkey = StringVar(value="ctrl+shift+;")
         self.compute_type = StringVar(value="float16")
-        self.model_size = StringVar(value="tiny")
+        self.model_size = StringVar(value="distil-large-v3")
         
         # Recording variables
         self.recording = False
@@ -157,7 +157,7 @@ class CombinedTranscriptionApp:
         Button(top_row, text="Unload", command=self.unload_model,
                bg='#3700B3', fg='white').pack(side="right", padx=2)
         
-        # Bottom row - Checkbuttons
+        # Bottom row - Checkbuttons and Hotkey dropdown
         bottom_row = Frame(settings_frame, bg='#121212')
         bottom_row.pack(fill="x", pady=2)
         
@@ -165,6 +165,10 @@ class CombinedTranscriptionApp:
                    bg='#121212', fg='white', selectcolor='#121212').pack(side="left", padx=2)
         Checkbutton(bottom_row, text="Copy", variable=self.copy_to_clipboard,
                    bg='#121212', fg='white', selectcolor='#121212').pack(side="left", padx=2)
+        
+
+        # Automatically register the hotkey when changed
+        self.hotkey.trace_add('write', lambda *args: self.register_hotkey())
 
     def create_text_output_section(self, parent):
         # Create a frame for text output section
@@ -258,10 +262,10 @@ class CombinedTranscriptionApp:
         self.load_model_thread.start()
     
     def register_hotkey(self):
-        # Unregister existing hotkey if any
+        # Unregister any existing hotkeys
         keyboard.unhook_all()
         
-        # Register new hotkey
+        # Register the new hotkey
         current_hotkey = self.hotkey.get()
         keyboard.add_hotkey(current_hotkey, self.toggle_recording)
         self.update_status(f"Registered hotkey: {current_hotkey}")
