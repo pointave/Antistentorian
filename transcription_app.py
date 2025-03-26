@@ -122,16 +122,16 @@ class CombinedTranscriptionApp:
         file_frame.pack(fill="x", pady=2)
         
         Label(file_frame, text="Input", bg='#121212', fg='white', 
-              font=("Arial", 10, "bold")).pack(side="left", padx=5)
+            font=("Arial", 10, "bold")).pack(side="left", padx=5)
         
         Button(file_frame, text="Open File", command=self.open_file_dialog,
-               bg='#3700B3', fg='white').pack(side="left", padx=2)
+            bg='#3700B3', fg='white').pack(side="left", padx=2)
         Button(file_frame, text="Open Folder", command=self.open_folder_dialog,
-               bg='#3700B3', fg='white').pack(side="left", padx=2)
+            bg='#3700B3', fg='white').pack(side="left", padx=2)
         
         # Keep Download Transcript button
         Button(file_frame, text="Download Transcript", command=self.download_transcript,
-               bg='#3700B3', fg='white').pack(side="left", padx=2)
+            bg='#3700B3', fg='white').pack(side="left", padx=2)
         
         # Recording controls
         record_frame = Frame(input_frame, bg='#121212')
@@ -140,13 +140,13 @@ class CombinedTranscriptionApp:
         Label(record_frame, text="Record", bg='#121212', fg='white').pack(side="left", padx=5)
         
         hotkey_menu = OptionMenu(record_frame, self.hotkey, 
-                               "ctrl+shift+;", "ctrl+shift+r", "alt+r", "ctrl+space")
+                            "ctrl+shift+;", "ctrl+shift+r", "alt+r", "ctrl+space")
         hotkey_menu.config(bg='#3700B3', fg='white')
         hotkey_menu["menu"].config(bg='#3700B3', fg='white')
         hotkey_menu.pack(side="left", padx=2)
         
         Button(record_frame, text="Start/Stop", command=self.toggle_recording,
-               bg='#3700B3', fg='white').pack(side="left", padx=2)
+            bg='#3700B3', fg='white').pack(side="left", padx=2)
         
         self.recording_status = Label(record_frame, text="Ready", 
                                     bg='#121212', fg='white')
@@ -163,24 +163,24 @@ class CombinedTranscriptionApp:
         
         Label(top_row, text="Model:", bg='#121212', fg='white').pack(side="left", padx=2)
         model_menu = OptionMenu(top_row, self.model_size, 
-                              *["tiny", "base", "small", "medium", "large-v3", "distil-large-v3"])
+                            *["tiny", "base", "small", "medium", "large-v3", "distil-large-v3"])
         model_menu.config(bg='#3700B3', fg='white')
         model_menu["menu"].config(bg='#3700B3', fg='white')
         model_menu.pack(side="left", padx=2)
         
         Button(top_row, text="Load", command=self.reload_model,
-               bg='#3700B3', fg='white').pack(side="right", padx=2)
+            bg='#3700B3', fg='white').pack(side="right", padx=2)
         Button(top_row, text="Unload", command=self.unload_model,
-               bg='#3700B3', fg='white').pack(side="right", padx=2)
+            bg='#3700B3', fg='white').pack(side="right", padx=2)
         
         # Bottom row - Checkbuttons and Hotkey dropdown
         bottom_row = Frame(settings_frame, bg='#121212')
         bottom_row.pack(fill="x", pady=2)
         
         Checkbutton(bottom_row, text="Timestamps", variable=self.include_timestamps,
-                   bg='#121212', fg='white', selectcolor='#121212').pack(side="left", padx=2)
+                bg='#121212', fg='white', selectcolor='#121212').pack(side="left", padx=2)
         Checkbutton(bottom_row, text="Copy", variable=self.copy_to_clipboard,
-                   bg='#121212', fg='white', selectcolor='#121212').pack(side="left", padx=2)
+                bg='#121212', fg='white', selectcolor='#121212').pack(side="left", padx=2)
         
 
         # Automatically register the hotkey when changed
@@ -192,7 +192,7 @@ class CombinedTranscriptionApp:
         tts_frame.pack(fill="x", padx=5, pady=2)
         
         Label(tts_frame, text="TTS Controls:", bg='#121212',
-              fg='white', font=("Arial", 10, "bold")).pack(side="left", padx=5)
+            fg='white', font=("Arial", 10, "bold")).pack(side="left", padx=5)
         
         # Populate dropdown with available voices
         voices = list_available_voices()
@@ -203,14 +203,14 @@ class CombinedTranscriptionApp:
         # Slider for TTS speed (1x to 3x)
         Label(tts_frame, text="Speed:", bg='#121212', fg='white').pack(side="left", padx=5)
         scale = Scale(tts_frame, from_=1.0, to=3.0, resolution=0.1, orient="horizontal",
-                      variable=self.tts_speed, bg='#121212', fg='white', highlightthickness=0)
+                    variable=self.tts_speed, bg='#121212', fg='white', highlightthickness=0)
         scale.pack(side="left", padx=5)
         
         # Icon buttons for play and stop transcript
         Button(tts_frame, text="▶", command=self.play_transcript,
-               bg='#3700B3', fg='white', font=("Arial", 12), width=3).pack(side="left", padx=2)
+            bg='#3700B3', fg='white', font=("Arial", 12), width=3).pack(side="left", padx=2)
         Button(tts_frame, text="■", command=self.stop_transcript,
-               bg='#3700B3', fg='white', font=("Arial", 12), width=3).pack(side="left", padx=2)
+            bg='#3700B3', fg='white', font=("Arial", 12), width=3).pack(side="left", padx=2)
 
     def get_ollama_models(self):
         """
@@ -249,7 +249,7 @@ class CombinedTranscriptionApp:
         ollama_frame.pack(fill="x", padx=5, pady=2)
         
         Label(ollama_frame, text="Ollama Controls:", bg='#121212',
-              fg='white', font=("Arial", 10, "bold")).pack(side="left", padx=5)
+            fg='white', font=("Arial", 10, "bold")).pack(side="left", padx=5)
         
         # Retrieve available models from the Ollama server.
         models = self.get_ollama_models()
@@ -263,13 +263,13 @@ class CombinedTranscriptionApp:
         self.ollama_option_menu.pack(side="left", padx=5)
         
         Button(ollama_frame, text="Summarize", command=self.summarize_text,
-               bg='#3700B3', fg='white').pack(side="left", padx=5)
+            bg='#3700B3', fg='white').pack(side="left", padx=5)
         Button(ollama_frame, text="Bullet Points", command=self.run_bullet_points_command,
-               bg='#3700B3', fg='white').pack(side="left", padx=5)
+            bg='#3700B3', fg='white').pack(side="left", padx=5)
         Button(ollama_frame, text="Proofread", command=self.run_proofread_command,
-               bg='#3700B3', fg='white').pack(side="left", padx=5)
+            bg='#3700B3', fg='white').pack(side="left", padx=5)
         Button(ollama_frame, text="⟳", command=self.refresh_ollama_models,
-               bg='#3700B3', fg='white', font=("Arial", 10), width=2).pack(side="left", padx=5)
+            bg='#3700B3', fg='white', font=("Arial", 10), width=2).pack(side="left", padx=5)
 
     def summarize_text(self):
         """Summarize the transcript in the text box using the selected Ollama model"""
@@ -328,7 +328,7 @@ class CombinedTranscriptionApp:
         scrollbar.pack(side="right", fill="y")
         
         self.output_text = Text(text_box_frame, bg='#1E1E1E', fg='#FFFFFF',
-                               insertbackground='white', wrap="word", yscrollcommand=scrollbar.set)
+                            insertbackground='white', wrap="word", yscrollcommand=scrollbar.set, undo=True)
         self.output_text.pack(side="left", fill="both", expand=True)
         scrollbar.config(command=self.output_text.yview)
 
@@ -353,9 +353,9 @@ class CombinedTranscriptionApp:
 
     def clear_ollama_memory(self):
         """
-        Clear Ollama's memory.
-        (In terminal you might type '/clear'; here this button will simulate that.)
-        """
+            Clear Ollama's memory.
+            (In terminal you might type '/clear'; here this button will simulate that.)
+            """
         # If you have any stored conversation history or memory, clear it here.
         # For now, simply update the status.
         self.update_status("Ollama memory cleared.")
@@ -437,9 +437,9 @@ class CombinedTranscriptionApp:
         control_frame.pack(fill="x", pady=5)
         
         Button(control_frame, text="Cancel Operation", command=self.cancel_operation,
-               bg='#FF0000', fg='white').pack(side="left", padx=5)
+            bg='#FF0000', fg='white').pack(side="left", padx=5)
         Button(control_frame, text="Quit", command=self.root.quit,
-               bg='#555555', fg='white').pack(side="right", padx=5)
+            bg='#555555', fg='white').pack(side="right", padx=5)
     
     def update_status(self, message):
         self.status_label.config(text=message)
