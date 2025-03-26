@@ -9,18 +9,19 @@ import sounddevice as sd
 import soundfile as sf
 import numpy as np
 import torch
-from tkinter import Tk, Label, Button, Checkbutton, IntVar, StringVar, Frame, OptionMenu, filedialog, messagebox, Text, Scrollbar
+from tkinter import Tk, Label, Button, Checkbutton, IntVar, StringVar, Frame, OptionMenu, filedialog, messagebox, Text, Scrollbar, DoubleVar, Scale
 from tkinterdnd2 import DND_FILES, TkinterDnD
 from faster_whisper import WhisperModel
 import pyperclip
 from pydub import AudioSegment
 import mimetypes
+from models import generate_speech, list_available_voices  # Import voice listing
 
 class CombinedTranscriptionApp:
     def __init__(self, root):
         self.root = root
         self.root.title("Antistentorian")
-        self.root.geometry("600x600")  # Reduced height
+        self.root.geometry("700x400")  # Reduced height
         self.root.configure(bg='#121212')
         
         # Initialize status_label before calling update_status
@@ -34,6 +35,8 @@ class CombinedTranscriptionApp:
         self.hotkey = StringVar(value="ctrl+shift+;")
         self.compute_type = StringVar(value="float16")
         self.model_size = StringVar(value="distil-large-v3")
+        self.voice_choice = StringVar(value="af_bella")  # New variable for voice selection
+        self.tts_speed = DoubleVar(value=1.0)  # New variable for TTS speed
         
         # Recording variables
         self.recording = False
@@ -46,6 +49,11 @@ class CombinedTranscriptionApp:
         self.stop_transcription = False
         self.model = None
         self.model_loaded = False  # Add this line
+        
+        # TTS variables
+        self.tts_thread = None
+        self.tts_playing = False
+        self.stop_tts = False
         
         # Check GPU availability
         self.has_gpu = self.check_gpu()
@@ -69,6 +77,10 @@ class CombinedTranscriptionApp:
         # Create UI sections in new layout
         self.create_input_section(left_panel)  # Combined file and recording controls
         self.create_settings_section(right_panel)  # Compact settings
+        
+        # NEW: Create TTS control section near the top
+        self.create_tts_control_section(main_frame)
+        
         self.create_text_output_section(main_frame)  # Keeps original size
         self.create_control_section(main_frame)
         
@@ -170,6 +182,31 @@ class CombinedTranscriptionApp:
         # Automatically register the hotkey when changed
         self.hotkey.trace_add('write', lambda *args: self.register_hotkey())
 
+    def create_tts_control_section(self, parent):
+        """Create a control row for TTS playback, voice selection and speed adjustment"""
+        tts_frame = Frame(parent, bg='#121212')
+        tts_frame.pack(fill="x", padx=5, pady=2)
+        
+        Label(tts_frame, text="TTS Controls:", bg='#121212',
+              fg='white', font=("Arial", 10, "bold")).pack(side="left", padx=5)
+        
+        # Populate dropdown with available voices
+        voices = list_available_voices()
+        if not voices:
+            voices = ["af_bella"]
+        OptionMenu(tts_frame, self.voice_choice, *voices).pack(side="left", padx=5)
+        
+        # New: Slider for TTS speed (1x to 3x)
+        Label(tts_frame, text="Speed:", bg='#121212', fg='white').pack(side="left", padx=5)
+        scale = Scale(tts_frame, from_=1.0, to=3.0, resolution=0.1, orient="horizontal",
+                      variable=self.tts_speed, bg='#121212', fg='white', highlightthickness=0)
+        scale.pack(side="left", padx=5)
+        
+        Button(tts_frame, text="Play Transcript", command=self.play_transcript,
+               bg='#3700B3', fg='white').pack(side="left", padx=5)
+        Button(tts_frame, text="Stop Transcript", command=self.stop_transcript,
+               bg='#3700B3', fg='white').pack(side="left", padx=5)
+
     def create_text_output_section(self, parent):
         # Create a frame for text output section
         text_frame = Frame(parent, bg='#121212', bd=2, relief="groove")
@@ -204,8 +241,10 @@ class CombinedTranscriptionApp:
         control_frame = Frame(parent, bg='#121212')
         control_frame.pack(fill="x", pady=5)
         
-        Button(control_frame, text="Cancel Operation", command=self.cancel_operation, bg='#FF0000', fg='white').pack(side="left", padx=5)
-        Button(control_frame, text="Quit", command=self.root.quit, bg='#555555', fg='white').pack(side="right", padx=5)
+        Button(control_frame, text="Cancel Operation", command=self.cancel_operation,
+               bg='#FF0000', fg='white').pack(side="left", padx=5)
+        Button(control_frame, text="Quit", command=self.root.quit,
+               bg='#555555', fg='white').pack(side="right", padx=5)
     
     def update_status(self, message):
         self.status_label.config(text=message)
@@ -647,7 +686,6 @@ class CombinedTranscriptionApp:
             self.update_status("Conversion failed: output file not found.")
 
     def download_transcript(self):
-        """Download subtitle from YouTube and convert to text with video title as name into a Transcripts folder"""
         from tkinter import simpledialog
         import glob
         youtube_url = simpledialog.askstring("Download Transcript", "Enter the YouTube video URL:")
@@ -657,13 +695,11 @@ class CombinedTranscriptionApp:
         self.update_status("Downloading subtitle...")
         import subprocess
 
-        # Create 'Transcripts' directory in working directory
         transcripts_dir = os.path.join(os.getcwd(), "Transcripts")
         os.makedirs(transcripts_dir, exist_ok=True)
 
         output_template = os.path.join(transcripts_dir, "%(title)s.%(ext)s")
 
-        # First try downloading TTML subtitles
         ttml_cmd = [
             "yt-dlp",
             "--skip-download",
@@ -680,7 +716,6 @@ class CombinedTranscriptionApp:
             self.update_status(f"Error downloading TTML subtitles: {e}")
             return
 
-        # Search for downloaded subtitle files in the Transcripts directory
         ttml_files = glob.glob(os.path.join(transcripts_dir, "*.en.ttml"))
         vtt_files = glob.glob(os.path.join(transcripts_dir, "*.en.vtt"))
         output_file = None
@@ -690,7 +725,7 @@ class CombinedTranscriptionApp:
             self.update_status("TTML subtitles downloaded. Converting internally...")
             output_file = self._convert_ttml_to_text(ttml_file)
             if output_file:
-                os.remove(ttml_file)  # cleanup
+                os.remove(ttml_file)  # Use consistent variable name "ttml_file"
             else:
                 return
         elif vtt_files:
@@ -698,21 +733,19 @@ class CombinedTranscriptionApp:
             self.update_status("TTML subtitles not found. Converting VTT subtitles internally...")
             output_file = self._convert_vtt_to_text(vtt_file)
             if output_file:
-                os.remove(vtt_file)  # cleanup
+                os.remove(vtt_file)
             else:
                 return
         else:
             self.update_status("No subtitles found. Please check availability.")
             return
 
-        # Read and display transcript
         if os.path.exists(output_file):
             with open(output_file, "r", encoding="utf-8") as f:
                 content = f.read()
             self.output_text.delete("1.0", "end")
             self.output_text.insert("1.0", content)
             self.update_status("Transcript downloaded and converted successfully.")
-            # Optionally copy to clipboard if enabled
             if self.copy_to_clipboard.get():
                 pyperclip.copy(content)
         else:
@@ -789,6 +822,143 @@ class CombinedTranscriptionApp:
         except Exception as e:
             self.update_status(f"Error converting VTT subtitles: {e}")
             return None
+
+    def play_transcript(self):
+        transcript = self.output_text.get("1.0", "end-1c").strip()
+        if not transcript:
+            self.update_status("No transcript available to play")
+            return
+
+        self.update_status("Starting TTS playback...")
+        # Launch TTS in background thread
+        self.tts_thread = threading.Thread(target=self._play_transcript_tts, args=(transcript,))
+        self.tts_thread.daemon = True
+        self.tts_playing = True
+        self.tts_thread.start()
+
+    def _play_transcript_tts(self, text):
+        try:
+            self.stop_tts = False  # reset stop flag
+            # Ensure TTS model is loaded separately
+            if not hasattr(self, "tts_model") or self.tts_model is None:
+                from models import build_model
+                self.tts_model = build_model("kokoro-v1_0.pth", self.device)
+
+            output_wav = os.path.join(os.getcwd(), "output.wav")
+            if os.path.exists(output_wav):
+                os.remove(output_wav)
+
+            voice_name = self.voice_choice.get()
+            tts_speed = self.tts_speed.get()
+            
+            # Split the transcript text into chunks initially (split by period)
+            all_chunks = [chunk.strip() for chunk in text.split(".") if chunk.strip()]
+
+            import numpy as np
+            import sounddevice as sd
+            import soundfile as sf
+            from queue import Queue, Empty
+            import threading, time
+
+            full_audio_chunks = []  # for optional final concatenation
+            q = Queue()
+            
+            # Set up batching parameters:
+            batch_size = 10       # maximum chunks to have in queue at any one time
+            replenish_amount = 5  # when consumed >= this many, produce more
+
+            # Shared counters (local variables) for producer/consumer coordination:
+            next_index = 0
+            produced_count = 0
+            consumed_count = 0
+
+            # Lock for updating counters
+            counter_lock = threading.Lock()
+
+            def producer():
+                nonlocal next_index, produced_count, consumed_count
+                while next_index < len(all_chunks) and not self.stop_tts:
+                    # Produce until current queue has at most (batch_size - replenish_amount) items
+                    with counter_lock:
+                        in_queue = produced_count - consumed_count
+                    while in_queue < batch_size and next_index < len(all_chunks) and not self.stop_tts:
+                        chunk = all_chunks[next_index]
+                        if not chunk.endswith("."):
+                            chunk += "."
+                        self.update_status(f"TTS: Generating chunk {next_index+1} of {len(all_chunks)}...")
+                        audio_result, _ = generate_speech(self.tts_model, chunk, voice=voice_name, speed=tts_speed)
+                        if audio_result is None:
+                            self.update_status(f"TTS inference failed for chunk {next_index+1}")
+                            next_index += 1  # skip failed chunk
+                            continue
+                        chunk_audio = audio_result.numpy()
+                        full_audio_chunks.append(chunk_audio)
+                        q.put(chunk_audio)
+                        with counter_lock:
+                            produced_count += 1
+                            in_queue = produced_count - consumed_count
+                        next_index += 1
+                    # Wait until consumer has consumed at least 'replenish_amount' chunks before producing more.
+                    while not self.stop_tts:
+                        with counter_lock:
+                            in_queue = produced_count - consumed_count
+                        if in_queue <= (batch_size - replenish_amount):
+                            break
+                        time.sleep(0.1)
+                q.put(None)  # signal completion
+
+            def consumer():
+                nonlocal consumed_count
+                while True:
+                    try:
+                        chunk_audio = q.get(timeout=0.5)
+                    except Empty:
+                        if self.stop_tts:
+                            break
+                        continue
+                    if chunk_audio is None:
+                        break
+                    with counter_lock:
+                        consumed_count += 1
+                    if self.stop_tts:
+                        sd.stop()
+                        break
+                    sd.play(chunk_audio, 24000)
+                    sd.wait()
+            
+            prod_thread = threading.Thread(target=producer)
+            cons_thread = threading.Thread(target=consumer)
+            prod_thread.daemon = True
+            cons_thread.daemon = True
+            prod_thread.start()
+            cons_thread.start()
+            prod_thread.join()
+            cons_thread.join()
+            
+            if not self.stop_tts:
+                if full_audio_chunks:
+                    concatenated = np.concatenate(full_audio_chunks)
+                    sf.write(output_wav, concatenated, 24000)
+                    self.update_status("TTS playback completed and full audio saved to output.wav")
+                else:
+                    self.update_status("No audio generated from TTS inference")
+            else:
+                self.update_status("TTS playback stopped by user")
+                        
+        except Exception as e:
+            self.update_status(f"TTS playback error: {e}")
+        finally:
+            self.tts_playing = False
+
+    def stop_transcript(self):
+        if self.tts_playing:
+            self.stop_tts = True
+            import sounddevice as sd
+            sd.stop()
+            self.tts_playing = False
+            self.update_status("TTS playback stopped")
+        else:
+            self.update_status("No TTS playback active")
 
 if __name__ == "__main__":
     # Set numpy multithreading limit to avoid conflicts with PyTorch
