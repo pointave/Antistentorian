@@ -6,6 +6,9 @@ Antistentorian is an all-in-one transcription application that leverages faster-
 
 The generated text is displayed within the user interface, providing an option for users to edit it directly. Ollama can be connected and provide quick fixes to your text. There is also TTS functionality using Kokoro and its fast speech generation.
 
+![anti-stentorian](https://github.com/user-attachments/assets/380c78b4-fe7e-4a6c-954c-c8facb72e601)
+
+
 **How to Use**
 
 1. Clone the Git repository.
