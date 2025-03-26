@@ -9,13 +9,14 @@ import sounddevice as sd
 import soundfile as sf
 import numpy as np
 import torch
-from tkinter import Tk, Label, Button, Checkbutton, IntVar, StringVar, Frame, OptionMenu, filedialog, messagebox, Text, Scrollbar, DoubleVar, Scale
+from tkinter import Tk, Label, Button, Checkbutton, IntVar, StringVar, Frame, OptionMenu, filedialog, messagebox, Text, Scrollbar, DoubleVar, Scale, Entry
 from tkinterdnd2 import DND_FILES, TkinterDnD
 from faster_whisper import WhisperModel
 import pyperclip
 from pydub import AudioSegment
 import mimetypes
 from models import generate_speech, list_available_voices  # Import voice listing
+import requests  # Add import at the top if not already present
 
 class CombinedTranscriptionApp:
     def __init__(self, root):
@@ -54,6 +55,7 @@ class CombinedTranscriptionApp:
         self.tts_thread = None
         self.tts_playing = False
         self.stop_tts = False
+        self.pause_tts = False  # <-- initialize pause flag
         
         # Check GPU availability
         self.has_gpu = self.check_gpu()
@@ -80,6 +82,8 @@ class CombinedTranscriptionApp:
         
         # NEW: Create TTS control section near the top
         self.create_tts_control_section(main_frame)
+        # NEW: Create Ollama control section for summarization
+        self.create_ollama_control_section(main_frame)
         
         self.create_text_output_section(main_frame)  # Keeps original size
         self.create_control_section(main_frame)
@@ -196,47 +200,237 @@ class CombinedTranscriptionApp:
             voices = ["af_bella"]
         OptionMenu(tts_frame, self.voice_choice, *voices).pack(side="left", padx=5)
         
-        # New: Slider for TTS speed (1x to 3x)
+        # Slider for TTS speed (1x to 3x)
         Label(tts_frame, text="Speed:", bg='#121212', fg='white').pack(side="left", padx=5)
         scale = Scale(tts_frame, from_=1.0, to=3.0, resolution=0.1, orient="horizontal",
                       variable=self.tts_speed, bg='#121212', fg='white', highlightthickness=0)
         scale.pack(side="left", padx=5)
         
-        Button(tts_frame, text="Play Transcript", command=self.play_transcript,
+        # Icon buttons for play and stop transcript
+        Button(tts_frame, text="▶", command=self.play_transcript,
+               bg='#3700B3', fg='white', font=("Arial", 12), width=3).pack(side="left", padx=2)
+        Button(tts_frame, text="■", command=self.stop_transcript,
+               bg='#3700B3', fg='white', font=("Arial", 12), width=3).pack(side="left", padx=2)
+
+    def get_ollama_models(self):
+        """
+        Query the Ollama API to get a list of available models.
+        Returns a list of model names.
+        """
+        try:
+            response = requests.get('http://localhost:11434/api/tags')
+            if response.status_code == 200:
+                data = response.json()
+                if 'models' in data:
+                    return [model['name'] for model in data['models']]
+                return ['gemma3:latest']
+            return ['gemma3:latest']
+        except Exception:
+            return ['gemma3:latest']
+
+    def refresh_ollama_models(self):
+        """Refresh the Ollama model dropdown with the current list from the server."""
+        current_model = self.ollama_choice.get()
+        models = self.get_ollama_models()
+        # Update the OptionMenu items:
+        self.ollama_option_menu['menu'].delete(0, 'end')
+        for model in models:
+            self.ollama_option_menu['menu'].add_command(label=model, command=lambda m=model: self.ollama_choice.set(m))
+        # Reset the selection:
+        if current_model in models:
+            self.ollama_choice.set(current_model)
+        else:
+            self.ollama_choice.set(models[0])
+        self.update_status("Ollama models refreshed")
+
+    def create_ollama_control_section(self, parent):
+        """Create a control row for Ollama summarization and additional commands"""
+        ollama_frame = Frame(parent, bg='#121212')
+        ollama_frame.pack(fill="x", padx=5, pady=2)
+        
+        Label(ollama_frame, text="Ollama Controls:", bg='#121212',
+              fg='white', font=("Arial", 10, "bold")).pack(side="left", padx=5)
+        
+        # Retrieve available models from the Ollama server.
+        models = self.get_ollama_models()
+        last_model = self.load_last_used_ollama_model()
+        default_model = last_model if last_model in models else models[0]
+        self.ollama_choice = StringVar(value=default_model)
+        self.ollama_choice.trace_add('write', self._ollama_choice_changed)
+        self.ollama_option_menu = OptionMenu(ollama_frame, self.ollama_choice, *models)
+        self.ollama_option_menu.config(bg='#3700B3', fg='white')
+        self.ollama_option_menu["menu"].config(bg='#3700B3', fg='white')
+        self.ollama_option_menu.pack(side="left", padx=5)
+        
+        Button(ollama_frame, text="Summarize", command=self.summarize_text,
                bg='#3700B3', fg='white').pack(side="left", padx=5)
-        Button(tts_frame, text="Stop Transcript", command=self.stop_transcript,
+        Button(ollama_frame, text="Bullet Points", command=self.run_bullet_points_command,
                bg='#3700B3', fg='white').pack(side="left", padx=5)
+        Button(ollama_frame, text="Proofread", command=self.run_proofread_command,
+               bg='#3700B3', fg='white').pack(side="left", padx=5)
+        Button(ollama_frame, text="⟳", command=self.refresh_ollama_models,
+               bg='#3700B3', fg='white', font=("Arial", 10), width=2).pack(side="left", padx=5)
+
+    def summarize_text(self):
+        """Summarize the transcript in the text box using the selected Ollama model"""
+        transcript = self.output_text.get("1.0", "end-1c").strip()
+        if not transcript:
+            self.update_status("No transcript available for summary")
+            return
+
+        self.update_status("Summarizing transcript using Ollama...")
+        try:
+            summary = self.call_ollama_summary(transcript, self.ollama_choice.get())
+            self.output_text.delete("1.0", "end")
+            self.output_text.insert("1.0", summary)
+            self.update_status("Transcript summarized using Ollama")
+        except Exception as e:
+            self.update_status(f"Error summarizing: {e}")
+
+    def call_ollama_summary(self, text, model):
+        """
+        Calls the Ollama API to generate a summary of the transcript.
+        Requires the 'ollama' package and a running Ollama server.
+        """
+        try:
+            from ollama import chat
+            response = chat(
+                model=model,
+                messages=[
+                    {"role": "system", "content": "You are an expert summarizer."},
+                    {"role": "user", "content": text}
+                ]
+            )
+            return response['message']['content']
+        except Exception as e:
+            self.update_status(f"Error calling Ollama API: {e}")
+            return f"Error summarizing transcript: {e}"
 
     def create_text_output_section(self, parent):
         # Create a frame for text output section
         text_frame = Frame(parent, bg='#121212', bd=2, relief="groove")
         text_frame.pack(fill="both", expand=True, pady=5)
         
-        # Add a label
-        Label(text_frame, text="Transcription Output", bg='#121212', fg='white', font=("Arial", 10, "bold")).pack(pady=5)
+        # Updated: Custom command section with only the Run button
+        header_frame = Frame(text_frame, bg='#121212')
+        header_frame.pack(fill="x", padx=5, pady=5)
+        Label(header_frame, text="Custom Command:", bg='#121212', fg='white', font=("Arial", 10, "bold")).pack(side="left", padx=5)
+        self.custom_command_entry = Entry(header_frame, bg='#1E1E1E', fg='white', insertbackground='white')
+        self.custom_command_entry.pack(side="left", fill="x", expand=True, padx=5)
+        Button(header_frame, text="Run", command=self.run_custom_command, bg='#3700B3', fg='white').pack(side="left", padx=5)
         
-        # Create a frame for the text box and scrollbar
+        # Create a frame for the actual transcript text box and scrollbar
         text_box_frame = Frame(text_frame, bg='#121212')
         text_box_frame.pack(fill="both", expand=True, padx=5, pady=5)
         
-        # Add a scrollbar
         scrollbar = Scrollbar(text_box_frame)
         scrollbar.pack(side="right", fill="y")
         
-        # Add a text box with dark theme colors
-        self.output_text = Text(text_box_frame, bg='#1E1E1E', fg='#FFFFFF', insertbackground='white',
-                               wrap="word", yscrollcommand=scrollbar.set)
+        self.output_text = Text(text_box_frame, bg='#1E1E1E', fg='#FFFFFF',
+                               insertbackground='white', wrap="word", yscrollcommand=scrollbar.set)
         self.output_text.pack(side="left", fill="both", expand=True)
         scrollbar.config(command=self.output_text.yview)
-        
-        # Buttons for text operations
-        button_frame = Frame(text_frame, bg='#121212')
-        button_frame.pack(fill="x", pady=5)
-        
-        Button(button_frame, text="Copy All", command=self.copy_all_text, bg='#3700B3', fg='white').pack(side="left", padx=5)
-        Button(button_frame, text="Clear", command=self.clear_text, bg='#3700B3', fg='white').pack(side="left", padx=5)
-        Button(button_frame, text="Save As...", command=self.save_text_as, bg='#3700B3', fg='white').pack(side="left", padx=5)
-    
+
+    def run_bullet_points_command(self):
+        """
+        Generate bullet-pointed main topics from the current transcript.
+        Uses the Ollama API with a preset instruction.
+        """
+        current_text = self.output_text.get("1.0", "end-1c")
+        if not current_text:
+            self.update_status("No transcript available for bullet point extraction.")
+            return
+        instruction = "Extract the main topics from the following text and list them. Dont begin your response with anything but the summary."
+        self.update_status("Generating bullet points for main topics via LLM...")
+        try:
+            new_text = self.call_ollama_custom_command(current_text, instruction)
+            self.output_text.delete("1.0", "end")
+            self.output_text.insert("1.0", new_text)
+            self.update_status("Bullet points generated successfully.")
+        except Exception as e:
+            self.update_status(f"Error generating bullet points: {e}")
+
+    def clear_ollama_memory(self):
+        """
+        Clear Ollama's memory.
+        (In terminal you might type '/clear'; here this button will simulate that.)
+        """
+        # If you have any stored conversation history or memory, clear it here.
+        # For now, simply update the status.
+        self.update_status("Ollama memory cleared.")
+
+    def run_custom_command(self):
+        """
+        Run a custom command on the current transcript from the text box.
+        The entered command is first attempted to be evaluated as a Python expression
+        using the variable 'text' (i.e. the current transcript). For example: text.upper()
+        If a SyntaxError is raised (e.g. for LLM-like natural language prompts such as
+        'translate this into german'), it falls back to using the Ollama API.
+        """
+        command = self.custom_command_entry.get().strip()
+        if not command:
+            self.update_status("No command provided.")
+            return
+        current_text = self.output_text.get("1.0", "end-1c")
+        try:
+            # Attempt to evaluate the command as Python code
+            new_text = eval(command, {"__builtins__": {}}, {"text": current_text})
+            if isinstance(new_text, str):
+                self.output_text.delete("1.0", "end")
+                self.output_text.insert("1.0", new_text)
+                self.update_status("Custom command executed successfully.")
+            else:
+                self.update_status("Result is not a string; no changes made.")
+        except SyntaxError:
+            # If a syntax error occurs, assume a natural language LLM command and use Ollama
+            self.update_status("Interpreting command via LLM...")
+            try:
+                new_text = self.call_ollama_custom_command(current_text, command)
+                self.output_text.delete("1.0", "end")
+                self.output_text.insert("1.0", new_text)
+                self.update_status("Custom command executed via LLM.")
+            except Exception as e:
+                self.update_status(f"Error executing custom command via LLM: {e}")
+        except Exception as e:
+            self.update_status(f"Error executing custom command: {e}")
+
+    def call_ollama_custom_command(self, text, command):
+        """
+        Calls the Ollama API to process the given text according to the custom command.
+        For example, if command is "translate this into german", the LLM should transform the text accordingly.
+        """
+        try:
+            from ollama import chat
+            response = chat(
+                model=self.ollama_choice.get(),  # Use selected Ollama model
+                messages=[
+                    {"role": "system", "content": "You are a helpful assistant."},
+                    {"role": "user", "content": f"Process the following text as per the instruction below.\n\nText:\n{text}\n\nInstruction:\n{command}"}
+                ]
+            )
+            return response['message']['content']
+        except Exception as e:
+            raise e
+
+    def run_proofread_command(self):
+        """
+        Proofread and fix punctuation in the current transcript.
+        Uses the Ollama API with a preset instruction.
+        """
+        current_text = self.output_text.get("1.0", "end-1c")
+        if not current_text:
+            self.update_status("No transcript available for proofreading.")
+            return
+        instruction = "Proofread the following text and correct any punctuation errors, including fixing any excessive periods."
+        self.update_status("Proofreading transcript via LLM...")
+        try:
+            new_text = self.call_ollama_custom_command(current_text, instruction)
+            self.output_text.delete("1.0", "end")
+            self.output_text.insert("1.0", new_text)
+            self.update_status("Proofreading completed successfully.")
+        except Exception as e:
+            self.update_status(f"Error proofreading text: {e}")
+
     def create_control_section(self, parent):
         control_frame = Frame(parent, bg='#121212')
         control_frame.pack(fill="x", pady=5)
@@ -839,7 +1033,7 @@ class CombinedTranscriptionApp:
     def _play_transcript_tts(self, text):
         try:
             self.stop_tts = False  # reset stop flag
-            # Ensure TTS model is loaded separately
+            # Ensure TTS model is loaded separately.
             if not hasattr(self, "tts_model") or self.tts_model is None:
                 from models import build_model
                 self.tts_model = build_model("kokoro-v1_0.pth", self.device)
@@ -850,8 +1044,8 @@ class CombinedTranscriptionApp:
 
             voice_name = self.voice_choice.get()
             tts_speed = self.tts_speed.get()
-            
-            # Split the transcript text into chunks initially (split by period)
+
+            # Split transcript into chunks (split by period)
             all_chunks = [chunk.strip() for chunk in text.split(".") if chunk.strip()]
 
             import numpy as np
@@ -860,25 +1054,22 @@ class CombinedTranscriptionApp:
             from queue import Queue, Empty
             import threading, time
 
-            full_audio_chunks = []  # for optional final concatenation
+            full_audio_chunks = []  # For optional final concatenation
             q = Queue()
-            
-            # Set up batching parameters:
-            batch_size = 10       # maximum chunks to have in queue at any one time
-            replenish_amount = 5  # when consumed >= this many, produce more
 
-            # Shared counters (local variables) for producer/consumer coordination:
+            # Parameters for batch production
+            batch_size = 10
+            replenish_amount = 5
+
             next_index = 0
             produced_count = 0
             consumed_count = 0
 
-            # Lock for updating counters
             counter_lock = threading.Lock()
 
             def producer():
                 nonlocal next_index, produced_count, consumed_count
                 while next_index < len(all_chunks) and not self.stop_tts:
-                    # Produce until current queue has at most (batch_size - replenish_amount) items
                     with counter_lock:
                         in_queue = produced_count - consumed_count
                     while in_queue < batch_size and next_index < len(all_chunks) and not self.stop_tts:
@@ -889,7 +1080,7 @@ class CombinedTranscriptionApp:
                         audio_result, _ = generate_speech(self.tts_model, chunk, voice=voice_name, speed=tts_speed)
                         if audio_result is None:
                             self.update_status(f"TTS inference failed for chunk {next_index+1}")
-                            next_index += 1  # skip failed chunk
+                            next_index += 1
                             continue
                         chunk_audio = audio_result.numpy()
                         full_audio_chunks.append(chunk_audio)
@@ -898,43 +1089,55 @@ class CombinedTranscriptionApp:
                             produced_count += 1
                             in_queue = produced_count - consumed_count
                         next_index += 1
-                    # Wait until consumer has consumed at least 'replenish_amount' chunks before producing more.
+                    # Wait until consumer has consumed at least the replenish_amount before producing more
                     while not self.stop_tts:
                         with counter_lock:
                             in_queue = produced_count - consumed_count
                         if in_queue <= (batch_size - replenish_amount):
                             break
                         time.sleep(0.1)
-                q.put(None)  # signal completion
+                q.put(None)  # Signal completion
 
             def consumer():
                 nonlocal consumed_count
                 while True:
                     try:
-                        chunk_audio = q.get(timeout=0.5)
+                        chunk_audio = q.get(timeout=0.2)
                     except Empty:
                         if self.stop_tts:
                             break
                         continue
                     if chunk_audio is None:
                         break
-                    with counter_lock:
-                        consumed_count += 1
+                    # If paused, poll until resumed (do not stop sd entirely here)
+                    while self.pause_tts and not self.stop_tts:
+                        time.sleep(0.1)
                     if self.stop_tts:
-                        sd.stop()
                         break
                     sd.play(chunk_audio, 24000)
-                    sd.wait()
-            
-            prod_thread = threading.Thread(target=producer)
-            cons_thread = threading.Thread(target=consumer)
-            prod_thread.daemon = True
-            cons_thread.daemon = True
+                    # Instead of blocking sd.wait(), poll until playback stops.
+                    start_time = time.time()
+                    duration = len(chunk_audio) / 24000.0  # approximate duration in seconds
+                    while (time.time() - start_time) < duration:
+                        if self.pause_tts or self.stop_tts:
+                            sd.stop()
+                            break
+                        time.sleep(0.05)
+                    with counter_lock:
+                        consumed_count += 1
+
+            # Start producer and consumer threads.
+            prod_thread = threading.Thread(target=producer, daemon=True)
+            cons_thread = threading.Thread(target=consumer, daemon=True)
             prod_thread.start()
             cons_thread.start()
-            prod_thread.join()
-            cons_thread.join()
-            
+
+            # Instead of blocking with join() indefinitely, poll with a short timeout.
+            while prod_thread.is_alive() or cons_thread.is_alive():
+                time.sleep(0.1)
+                if self.stop_tts:
+                    break
+
             if not self.stop_tts:
                 if full_audio_chunks:
                     concatenated = np.concatenate(full_audio_chunks)
@@ -943,8 +1146,8 @@ class CombinedTranscriptionApp:
                 else:
                     self.update_status("No audio generated from TTS inference")
             else:
-                self.update_status("TTS playback stopped by user")
-                        
+                self.update_status("TTS playback was stopped by user")
+
         except Exception as e:
             self.update_status(f"TTS playback error: {e}")
         finally:
@@ -959,6 +1162,37 @@ class CombinedTranscriptionApp:
             self.update_status("TTS playback stopped")
         else:
             self.update_status("No TTS playback active")
+
+    def pause_transcript(self):
+        if self.tts_playing and not self.pause_tts:
+            self.pause_tts = True
+            self.update_status("TTS playback paused")
+        else:
+            self.update_status("TTS playback already paused or not active")
+
+    def resume_transcript(self):
+        if self.tts_playing and self.pause_tts:
+            self.pause_tts = False
+            self.update_status("TTS playback resumed")
+        else:
+            self.update_status("TTS playback is not paused or not active")
+
+    def load_last_used_ollama_model(self):
+        config_file = os.path.join(os.path.expanduser("~"), ".antistentorian_last_model.txt")
+        if os.path.exists(config_file):
+            with open(config_file, "r", encoding="utf-8") as f:
+                model = f.read().strip()
+            return model
+        return None
+
+    def save_last_used_ollama_model(self, model):
+        config_file = os.path.join(os.path.expanduser("~"), ".antistentorian_last_model.txt")
+        with open(config_file, "w", encoding="utf-8") as f:
+            f.write(model)
+
+    def _ollama_choice_changed(self, *args):
+        selected_model = self.ollama_choice.get()
+        self.save_last_used_ollama_model(selected_model)
 
 if __name__ == "__main__":
     # Set numpy multithreading limit to avoid conflicts with PyTorch
