@@ -311,13 +311,14 @@ class CombinedTranscriptionApp:
         text_frame = Frame(parent, bg='#121212', bd=2, relief="groove")
         text_frame.pack(fill="both", expand=True, pady=5)
         
-        # Updated: Custom command section with only the Run button
+        # Updated: Custom command section with Run and Clear buttons
         header_frame = Frame(text_frame, bg='#121212')
         header_frame.pack(fill="x", padx=5, pady=5)
         Label(header_frame, text="Custom Command:", bg='#121212', fg='white', font=("Arial", 10, "bold")).pack(side="left", padx=5)
         self.custom_command_entry = Entry(header_frame, bg='#1E1E1E', fg='white', insertbackground='white')
         self.custom_command_entry.pack(side="left", fill="x", expand=True, padx=5)
         Button(header_frame, text="Run", command=self.run_custom_command, bg='#3700B3', fg='white').pack(side="left", padx=5)
+        Button(header_frame, text="Clear", command=self.clear_ollama_memory, bg='#3700B3', fg='white').pack(side="left", padx=5)
         
         # Create a frame for the actual transcript text box and scrollbar
         text_box_frame = Frame(text_frame, bg='#121212')
@@ -340,7 +341,7 @@ class CombinedTranscriptionApp:
         if not current_text:
             self.update_status("No transcript available for bullet point extraction.")
             return
-        instruction = "Extract the main topics from the following text and list them. Dont begin your response with anything but the summary."
+        instruction = "Extract the main topics from the following text and list them. Dont begin your response with anything but the summary. make sure each sentence ends with a period."
         self.update_status("Generating bullet points for main topics via LLM...")
         try:
             new_text = self.call_ollama_custom_command(current_text, instruction)
