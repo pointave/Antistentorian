@@ -1,9 +1,18 @@
 keyboard
 sounddevice
-soundfile
 numpy
-torch
 tkinterdnd2
 faster-whisper
 pyperclip
-pydub
+kokoro  # Official Kokoro TTS library
+misaki  # G2P library for Kokoro
+torch  # PyTorch for model inference
+soundfile  # Audio file handling
+huggingface-hub  # Model downloads
+pydub  # For audio format conversion
+espeakng-loader  # For loading espeak-ng library
+phonemizer-fork  # For phoneme generation
+wheel  # For building packages
+setuptools  # For installing packages
+num2words  # For number to word conversion
+spacy  # For text processing 
