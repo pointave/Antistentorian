@@ -550,10 +550,11 @@ class CombinedTranscriptionApp:
     def register_hotkey(self):
         # Unregister any existing hotkeys
         keyboard.unhook_all()
-        
-        # Register the new hotkey
+
+        # Register the new hotkey globally (system-wide)
         current_hotkey = self.hotkey.get()
-        keyboard.add_hotkey(current_hotkey, self.toggle_recording)
+        # Fix: Use suppress=False to allow hotkey to work outside the app window
+        keyboard.add_hotkey(current_hotkey, lambda: self.root.after(0, self.toggle_recording), suppress=False, trigger_on_release=False)
         self.update_status(f"Registered hotkey: {current_hotkey}")
     
     def open_file_dialog(self):
