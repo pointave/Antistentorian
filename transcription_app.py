@@ -17,6 +17,12 @@ from pydub import AudioSegment
 import mimetypes
 from models import generate_speech, list_available_voices  # Import voice listing
 import requests  # Add import at the top if not already present
+try:
+    import nemo.collections.asr as nemo_asr  # Add NeMo ASR import
+except ModuleNotFoundError as e:
+    nemo_asr = None
+    print("Warning: nemo.collections.asr could not be imported. Parakeet model will not be available.")
+    print("Reason:", e)
 
 class CombinedTranscriptionApp:
     def __init__(self, root):
@@ -35,8 +41,8 @@ class CombinedTranscriptionApp:
         self.copy_to_clipboard = IntVar(value=1)
         self.hotkey = StringVar(value="ctrl+shift+;")
         self.compute_type = StringVar(value="float16")
-        self.model_size = StringVar(value="distil-large-v3")
-        self.voice_choice = StringVar(value="af_bella")  # New variable for voice selection
+        self.model_size = StringVar(value="parakeet-tdt")
+        self.voice_choice = StringVar(value="af_aoede")  # New variable for voice selection
         self.tts_speed = DoubleVar(value=1.0)  # New variable for TTS speed
         
         # Recording variables
@@ -50,6 +56,7 @@ class CombinedTranscriptionApp:
         self.stop_transcription = False
         self.model = None
         self.model_loaded = False  # Add this line
+        self.parakeet_model = None  # Add Parakeet model attribute
         
         # TTS variables
         self.tts_thread = None
@@ -83,7 +90,7 @@ class CombinedTranscriptionApp:
         # NEW: Create TTS control section near the top
         self.create_tts_control_section(main_frame)
         # NEW: Create Ollama control section for summarization
-        self.create_ollama_control_section(main_frame)
+        self.create_ollama_and_api_section(main_frame)
         
         self.create_text_output_section(main_frame)  # Keeps original size
         self.create_control_section(main_frame)
@@ -163,7 +170,7 @@ class CombinedTranscriptionApp:
         
         Label(top_row, text="Model:", bg='#121212', fg='white').pack(side="left", padx=2)
         model_menu = OptionMenu(top_row, self.model_size, 
-                            *["tiny", "base", "small", "medium", "large-v3", "distil-large-v3"])
+                            *["tiny", "base", "small", "medium", "large-v3", "distil-large-v3", "parakeet-tdt"])  # Add parakeet-tdt
         model_menu.config(bg='#3700B3', fg='white')
         model_menu["menu"].config(bg='#3700B3', fg='white')
         model_menu.pack(side="left", padx=2)
@@ -243,15 +250,18 @@ class CombinedTranscriptionApp:
             self.ollama_choice.set(models[0])
         self.update_status("Ollama models refreshed")
 
-    def create_ollama_control_section(self, parent):
-        """Create a control row for Ollama summarization and additional commands"""
-        ollama_frame = Frame(parent, bg='#121212')
-        ollama_frame.pack(fill="x", padx=5, pady=2)
-        
+    def create_ollama_and_api_section(self, parent):
+        """Create a row with Ollama controls (left) and API server controls (right)"""
+        row_frame = Frame(parent, bg='#121212')
+        row_frame.pack(fill="x", padx=5, pady=2)
+
+        # Ollama controls (left)
+        ollama_frame = Frame(row_frame, bg='#121212')
+        ollama_frame.pack(side="left", fill="x", expand=True)
+
         Label(ollama_frame, text="Ollama Controls:", bg='#121212',
             fg='white', font=("Arial", 10, "bold")).pack(side="left", padx=5)
-        
-        # Retrieve available models from the Ollama server.
+
         models = self.get_ollama_models()
         last_model = self.load_last_used_ollama_model()
         default_model = last_model if last_model in models else models[0]
@@ -261,7 +271,7 @@ class CombinedTranscriptionApp:
         self.ollama_option_menu.config(bg='#3700B3', fg='white')
         self.ollama_option_menu["menu"].config(bg='#3700B3', fg='white')
         self.ollama_option_menu.pack(side="left", padx=5)
-        
+
         Button(ollama_frame, text="Summarize", command=self.summarize_text,
             bg='#3700B3', fg='white').pack(side="left", padx=5)
         Button(ollama_frame, text="Bullet Points", command=self.run_bullet_points_command,
@@ -270,6 +280,31 @@ class CombinedTranscriptionApp:
             bg='#3700B3', fg='white').pack(side="left", padx=5)
         Button(ollama_frame, text="⟳", command=self.refresh_ollama_models,
             bg='#3700B3', fg='white', font=("Arial", 10), width=2).pack(side="left", padx=5)
+
+        # API server controls (right)
+        api_frame = Frame(row_frame, bg='#121212')
+        api_frame.pack(side="right", fill="x", expand=True)
+
+        Label(api_frame, text="API Server:", bg='#121212',
+            fg='white', font=("Arial", 10, "bold")).pack(side="left", padx=5)
+
+        # API URL Entry (read-only, full width, easy to copy)
+        # For OpenAI Speech API, the endpoint should be something like:
+        # https://api.openai.com/v1/audio/speech
+        # or for local OpenWebUI, it must support the OpenAI API spec.
+        # If OpenWebUI is not proxying the /v1/audio/speech endpoint, it will not work.
+        self.api_url = StringVar(value="http://localhost:8002/v1/audio/speech")
+        self.api_url_entry = Entry(api_frame, textvariable=self.api_url, width=40,
+                                   bg='#1E1E1E', fg='white', readonlybackground='#1E1E1E',
+                                   state="readonly", relief="flat", font=("Arial", 10))
+        self.api_url_entry.pack(side="left", padx=5, fill="x", expand=True)
+
+        Button(api_frame, text="Copy URL", command=lambda: pyperclip.copy(self.api_url.get()),
+            bg='#3700B3', fg='white').pack(side="left", padx=5)
+
+    def update_api_url(self, url):
+        """Update the API URL entry (call this if the URL changes)"""
+        self.api_url.set(url)
 
     def summarize_text(self):
         """Summarize the transcript in the text box using the selected Ollama model"""
@@ -477,11 +512,28 @@ class CombinedTranscriptionApp:
     
     def load_model(self):
         try:
-            self.update_status(f"Loading model {self.model_size.get()} on {self.device}...")
+            model_name = self.model_size.get()
+            self.update_status(f"Loading model {model_name} on {self.device}...")
             compute_type = self.compute_type.get()
-            self.model = WhisperModel(self.model_size.get(), device=self.device, compute_type=compute_type)
-            self.model_loaded = True  # Add this line
-            self.update_status("Model loaded successfully.")
+            if model_name == "parakeet-tdt":
+                if nemo_asr is None:
+                    self.update_status("NeMo/Parakeet dependencies not installed. Please install hydra and nemo_toolkit.")
+                    messagebox.showerror("Error", "NeMo/Parakeet dependencies not installed. Please install hydra and nemo_toolkit.")
+                    self.model_loaded = False
+                    return
+                # Load Parakeet model
+                self.parakeet_model = nemo_asr.models.ASRModel.from_pretrained(model_name="nvidia/parakeet-tdt-0.6b-v2")
+                self.parakeet_model.eval()
+                self.parakeet_model.to(self.device)
+                self.model = None
+                self.model_loaded = True
+                self.update_status("Parakeet-TDT model loaded successfully.")
+            else:
+                # Load Whisper model
+                self.model = WhisperModel(model_name, device=self.device, compute_type=compute_type)
+                self.parakeet_model = None
+                self.model_loaded = True
+                self.update_status("Model loaded successfully.")
         except Exception as e:
             self.update_status(f"Error loading model: {str(e)}")
             messagebox.showerror("Error", f"Failed to load model: {str(e)}")
@@ -553,10 +605,15 @@ class CombinedTranscriptionApp:
             raise
     
     def transcribe_file(self, file_path):
-        if self.model is None:
-            messagebox.showerror("Error", "Model not loaded yet. Please wait.")
-            return
-            
+        if self.model_size.get() == "parakeet-tdt":
+            if self.parakeet_model is None:
+                messagebox.showerror("Error", "Parakeet model not loaded yet. Please wait.")
+                return
+        else:
+            if self.model is None:
+                messagebox.showerror("Error", "Model not loaded yet. Please wait.")
+                return
+
         self.stop_transcription = False
         self.transcription_thread = threading.Thread(target=self._transcribe_file, args=(file_path,))
         self.transcription_thread.daemon = True
@@ -564,72 +621,120 @@ class CombinedTranscriptionApp:
         self.update_status(f"Transcribing: {os.path.basename(file_path)}")
     
     def _transcribe_file(self, file_path):
-        try:
-            start_time = time.time()
-            
-            # Convert file to WAV if it's not already
-            temp_wav_path = None
-            if not file_path.lower().endswith('.wav'):
-                temp_wav_path = self.convert_to_wav(file_path)
-                file_to_transcribe = temp_wav_path
-            else:
-                file_to_transcribe = file_path
-            
-            segments, info = self.model.transcribe(file_to_transcribe, beam_size=5)
-            
-            # Create output file path based on original file
-            output_file_name = os.path.splitext(file_path)[0] + "_transcribed.txt"
-            transcript = ""
-            
-            with open(output_file_name, 'w', encoding='utf-8') as f:
-                include_timestamps = self.include_timestamps.get()
-                if include_timestamps:
-                    for segment in segments:
-                        if self.stop_transcription:
-                            return
-                        line = f"[{segment.start:.2f}s -> {segment.end:.2f}s] {segment.text}"
-                        f.write(line + "\n")
-                        transcript += line + "\n"
+        if self.model_size.get() == "parakeet-tdt":
+            try:
+                import pandas as pd
+                from pathlib import Path
+                # Preprocess audio: convert to mono and 16kHz if needed
+                audio = AudioSegment.from_file(file_path)
+                if audio.frame_rate != 16000 or audio.channels != 1:
+                    audio = audio.set_frame_rate(16000).set_channels(1)
+                    temp_wav = tempfile.NamedTemporaryFile(delete=False, suffix='.wav')
+                    audio.export(temp_wav.name, format="wav")
+                    processed_path = temp_wav.name
                 else:
-                    for segment in segments:
-                        if self.stop_transcription:
-                            return
-                        f.write(f"{segment.text}\n")
-                        transcript += segment.text + "\n"
-            
-            # Clean the output text file
-            self.clean_text_file(output_file_name)
-            
-            # Reload the cleaned file to get the final transcript
-            with open(output_file_name, 'r', encoding='utf-8') as f:
-                cleaned_transcript = f.read()
-            
-            # Display transcript in the text box
-            self.output_text.delete("1.0", "end")
-            self.output_text.insert("1.0", cleaned_transcript)
+                    processed_path = file_path
 
-            end_time = time.time()
-            self.update_status(f"Transcription completed in {end_time - start_time:.2f} seconds")
-            
-            if self.copy_to_clipboard.get():
-                pyperclip.copy(cleaned_transcript)
-                self.update_status("Transcription copied to clipboard")
-            
-            # Remove the temporary file if created
-            if temp_wav_path:
-                try:
-                    os.unlink(temp_wav_path)
-                except:
-                    pass
-            
-        except Exception as e:
-            self.update_status(f"Error transcribing: {str(e)}")
-            messagebox.showerror("Error", f"Failed to transcribe: {str(e)}")
-            if temp_wav_path:
-                try:
-                    os.unlink(temp_wav_path)
-                except:
-                    pass
+                # Transcribe with Parakeet
+                output = self.parakeet_model.transcribe([processed_path], timestamps=True)
+                segment_timestamps = output[0].timestamp['segment']
+                transcript = ""
+                include_timestamps = self.include_timestamps.get()
+                for seg in segment_timestamps:
+                    if self.stop_transcription:
+                        return
+                    if include_timestamps:
+                        line = f"[{seg['start']:.2f}s -> {seg['end']:.2f}s] {seg['segment']}"
+                    else:
+                        line = seg['segment']
+                    transcript += line.strip() + "\n"
+
+                # Clean up
+                if processed_path != file_path:
+                    try:
+                        os.unlink(processed_path)
+                    except Exception:
+                        pass
+
+                # Display transcript in the text box
+                self.output_text.delete("1.0", "end")
+                self.output_text.insert("1.0", transcript.strip())
+
+                if self.copy_to_clipboard.get():
+                    pyperclip.copy(transcript.strip())
+                    self.update_status("Transcription copied to clipboard")
+
+                self.update_status("Transcription completed (Parakeet-TDT)")
+            except Exception as e:
+                self.update_status(f"Error transcribing (Parakeet): {str(e)}")
+                messagebox.showerror("Error", f"Failed to transcribe: {str(e)}")
+        else:
+            try:
+                start_time = time.time()
+                
+                # Convert file to WAV if it's not already
+                temp_wav_path = None
+                if not file_path.lower().endswith('.wav'):
+                    temp_wav_path = self.convert_to_wav(file_path)
+                    file_to_transcribe = temp_wav_path
+                else:
+                    file_to_transcribe = file_path
+                
+                segments, info = self.model.transcribe(file_to_transcribe, beam_size=5)
+                
+                # Create output file path based on original file
+                output_file_name = os.path.splitext(file_path)[0] + "_transcribed.txt"
+                transcript = ""
+                
+                with open(output_file_name, 'w', encoding='utf-8') as f:
+                    include_timestamps = self.include_timestamps.get()
+                    if include_timestamps:
+                        for segment in segments:
+                            if self.stop_transcription:
+                                return
+                            line = f"[{segment.start:.2f}s -> {segment.end:.2f}s] {segment.text}"
+                            f.write(line + "\n")
+                            transcript += line + "\n"
+                    else:
+                        for segment in segments:
+                            if self.stop_transcription:
+                                return
+                            f.write(f"{segment.text}\n")
+                            transcript += segment.text + "\n"
+                
+                # Clean the output text file
+                self.clean_text_file(output_file_name)
+                
+                # Reload the cleaned file to get the final transcript
+                with open(output_file_name, 'r', encoding='utf-8') as f:
+                    cleaned_transcript = f.read()
+                
+                # Display transcript in the text box
+                self.output_text.delete("1.0", "end")
+                self.output_text.insert("1.0", cleaned_transcript)
+
+                end_time = time.time()
+                self.update_status(f"Transcription completed in {end_time - start_time:.2f} seconds")
+                
+                if self.copy_to_clipboard.get():
+                    pyperclip.copy(cleaned_transcript)
+                    self.update_status("Transcription copied to clipboard")
+                
+                # Remove the temporary file if created
+                if temp_wav_path:
+                    try:
+                        os.unlink(temp_wav_path)
+                    except:
+                        pass
+                
+            except Exception as e:
+                self.update_status(f"Error transcribing: {str(e)}")
+                messagebox.showerror("Error", f"Failed to transcribe: {str(e)}")
+                if temp_wav_path:
+                    try:
+                        os.unlink(temp_wav_path)
+                    except:
+                        pass
     
     def clean_text_file(self, file_path):
         """
@@ -750,10 +855,11 @@ class CombinedTranscriptionApp:
             self.update_status("Failed to load model. Cannot start recording.")
             return
 
-        if self.model is None:
+        # Fix: Check for both Whisper and Parakeet models
+        if self.model is None and self.parakeet_model is None:
             self.update_status("Model not loaded yet. Please wait.")
             return
-            
+
         if not self.recording:
             # Start recording
             self.recording = True
@@ -780,51 +886,79 @@ class CombinedTranscriptionApp:
                 self.transcribe_recording_thread = threading.Thread(target=self._transcribe_recording, args=(audio_file,))
                 self.transcribe_recording_thread.daemon = True
                 self.transcribe_recording_thread.start()
-    
+
     def _transcribe_recording(self, audio_file):
         try:
             start_time = time.time()
-            segments, info = self.model.transcribe(audio_file, beam_size=5)
-            
-            # Generate transcript
+            # Fix: Use correct model for live transcription
             transcript = ""
-            if self.include_timestamps.get():
-                for segment in segments:
-                    transcript += f"[{segment.start:.2f}s -> {segment.end:.2f}s] {segment.text}\n"
+            if self.model_size.get() == "parakeet-tdt" and self.parakeet_model is not None:
+                # Preprocess audio: convert to mono and 16kHz if needed
+                audio = AudioSegment.from_file(audio_file)
+                if audio.frame_rate != 16000 or audio.channels != 1:
+                    audio = audio.set_frame_rate(16000).set_channels(1)
+                    temp_wav = tempfile.NamedTemporaryFile(delete=False, suffix='.wav')
+                    audio.export(temp_wav.name, format="wav")
+                    processed_path = temp_wav.name
+                else:
+                    processed_path = audio_file
+
+                output = self.parakeet_model.transcribe([processed_path], timestamps=True)
+                segment_timestamps = output[0].timestamp['segment']
+                if self.include_timestamps.get():
+                    for seg in segment_timestamps:
+                        transcript += f"[{seg['start']:.2f}s -> {seg['end']:.2f}s] {seg['segment']}\n"
+                else:
+                    for seg in segment_timestamps:
+                        transcript += f"{seg['segment']}\n"
+                # Clean up
+                if processed_path != audio_file:
+                    try:
+                        os.unlink(processed_path)
+                    except Exception:
+                        pass
+            elif self.model is not None:
+                segments, info = self.model.transcribe(audio_file, beam_size=5)
+                if self.include_timestamps.get():
+                    for segment in segments:
+                        transcript += f"[{segment.start:.2f}s -> {segment.end:.2f}s] {segment.text}\n"
+                else:
+                    for segment in segments:
+                        transcript += f"{segment.text}\n"
             else:
-                for segment in segments:
-                    transcript += f"{segment.text}\n"
-            
+                self.update_status("No model loaded for live transcription.")
+                self.recording_status.config(text="Not Recording", fg='white')
+                return
+
             end_time = time.time()
-            
             # Clean up the transcript
             cleaned_transcript = transcript.replace('\n', ' ').replace('  ', ' ').strip()
             if not cleaned_transcript.endswith('.'):
                 cleaned_transcript += '.'
-            
+
             # Update text box with the transcript
             self.output_text.delete("1.0", "end")
             self.output_text.insert("1.0", cleaned_transcript)
-            
+
             # Save transcript to file
             timestamp = time.strftime("%Y%m%d-%H%M%S")
             output_dir = os.path.join(os.path.expanduser("~"), "Whisper_Transcriptions")
             os.makedirs(output_dir, exist_ok=True)
             output_file = os.path.join(output_dir, f"recorded_transcript_{timestamp}.txt")
-            
+
             with open(output_file, 'w', encoding='utf-8') as f:
                 f.write(cleaned_transcript)
-            
+
             # Copy to clipboard if enabled
             if self.copy_to_clipboard.get():
                 pyperclip.copy(cleaned_transcript)
-            
+
             # Clean up temporary file
             os.unlink(audio_file)
-            
+
             self.update_status(f"Transcription completed in {end_time - start_time:.2f} seconds")
             self.recording_status.config(text="Not Recording", fg='white')
-            
+
         except Exception as e:
             self.update_status(f"Error transcribing recording: {str(e)}")
             self.recording_status.config(text="Not Recording", fg='white')
@@ -840,9 +974,10 @@ class CombinedTranscriptionApp:
         messagebox.showinfo("Info", "Operation cancelled")
 
     def unload_model(self):
-        """Unload the Whisper model to free up memory"""
-        if self.model is not None:
+        """Unload the Whisper or Parakeet model to free up memory"""
+        if self.model is not None or self.parakeet_model is not None:
             self.model = None
+            self.parakeet_model = None
             self.model_loaded = False
             torch.cuda.empty_cache()  # Clear CUDA cache if using GPU
             self.update_status("Model unloaded successfully")
@@ -1198,10 +1333,21 @@ class CombinedTranscriptionApp:
 if __name__ == "__main__":
     # Set numpy multithreading limit to avoid conflicts with PyTorch
     os.environ["OMP_NUM_THREADS"] = "1"
-    
+
+    # Print all exceptions to the terminal for debugging
     try:
         root = TkinterDnD.Tk()
         app = CombinedTranscriptionApp(root)
         root.mainloop()
     except Exception as e:
-        messagebox.showerror("Fatal Error", f"Application error: {str(e)}")
+        import traceback
+        print("Fatal Error: Application error:", file=sys.stderr)
+        traceback.print_exc()
+        # Try to show error in a messagebox if possible
+        try:
+            import tkinter
+            root = tkinter.Tk()
+            root.withdraw()
+            messagebox.showerror("Fatal Error", f"Application error: {str(e)}")
+        except Exception:
+            pass
