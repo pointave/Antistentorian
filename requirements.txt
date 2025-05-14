@@ -16,3 +16,5 @@ wheel  # For building packages
 setuptools  # For installing packages
 num2words  # For number to word conversion
 spacy  # For text processing 
+nemo_toolkit[asr]
+nvidia-pyindex
