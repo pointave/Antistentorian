@@ -30,3 +30,4 @@ To modify the default model used by Antistentorian, change line 36 to specify yo
 - Faster-Whisper
 - Yt-dlp
 - Ollama
+- Parakeet
