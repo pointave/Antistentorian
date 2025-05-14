@@ -41,7 +41,7 @@ class CombinedTranscriptionApp:
         self.copy_to_clipboard = IntVar(value=1)
         self.hotkey = StringVar(value="ctrl+shift+;")
         self.compute_type = StringVar(value="float16")
-        self.model_size = StringVar(value="parakeet-tdt")
+        self.model_size = StringVar(value="tiny")
         self.voice_choice = StringVar(value="af_aoede")  # New variable for voice selection
         self.tts_speed = DoubleVar(value=1.0)  # New variable for TTS speed
         
@@ -976,14 +976,28 @@ class CombinedTranscriptionApp:
 
     def unload_model(self):
         """Unload the Whisper or Parakeet model to free up memory"""
-        if self.model is not None or self.parakeet_model is not None:
+        import gc
+        if self.model is not None:
+            del self.model
             self.model = None
+        if self.parakeet_model is not None:
+            try:
+                # Move to CPU before deleting to help free CUDA memory
+                try:
+                    self.parakeet_model.to("cpu")
+                except Exception:
+                    pass
+                del self.parakeet_model
+            except Exception:
+                pass
             self.parakeet_model = None
-            self.model_loaded = False
+        self.model_loaded = False
+        try:
             torch.cuda.empty_cache()  # Clear CUDA cache if using GPU
-            self.update_status("Model unloaded successfully")
-        else:
-            self.update_status("No model is currently loaded")
+        except Exception:
+            pass
+        gc.collect()
+        self.update_status("Model unloaded successfully")
 
     def open_subtitle_dialog(self):
         """Open a file dialog for subtitle files and convert them"""
@@ -1054,7 +1068,7 @@ class CombinedTranscriptionApp:
         if ttml_files:
             ttml_file = ttml_files[0]
             self.update_status("TTML subtitles downloaded. Converting internally...")
-            output_file = self._convert_ttml_to_text(ttml_file)
+            output_file = self._convert_ttml_to_text(tttml_file)
             if output_file:
                 os.remove(ttml_file)  # Use consistent variable name "ttml_file"
             else:
