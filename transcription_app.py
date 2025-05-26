@@ -41,7 +41,7 @@ class CombinedTranscriptionApp:
         self.copy_to_clipboard = IntVar(value=1)
         self.hotkey = StringVar(value="ctrl+shift+;")
         self.compute_type = StringVar(value="float16")
-        self.model_size = StringVar(value="tiny")
+        self.model_size = StringVar(value="tiny")  ####  (value="parakeet-tdt")
         self.voice_choice = StringVar(value="af_aoede")  # New variable for voice selection
         self.tts_speed = DoubleVar(value=1.0)  # New variable for TTS speed
         
@@ -218,6 +218,9 @@ class CombinedTranscriptionApp:
             bg='#3700B3', fg='white', font=("Arial", 12), width=3).pack(side="left", padx=2)
         Button(tts_frame, text="■", command=self.stop_transcript,
             bg='#3700B3', fg='white', font=("Arial", 12), width=3).pack(side="left", padx=2)
+        # --- Add Download Audio button ---
+        Button(tts_frame, text="Download Audio", command=self.download_tts_audio,
+            bg='#3700B3', fg='white', font=("Arial", 10), width=14).pack(side="left", padx=5)
 
     def get_ollama_models(self):
         """
@@ -1327,6 +1330,69 @@ class CombinedTranscriptionApp:
             self.update_status("TTS playback resumed")
         else:
             self.update_status("TTS playback is not paused or not active")
+
+    def download_tts_audio(self):
+        """
+        Generate and save the concatenated TTS audio for the current transcript as MP3 only.
+        """
+        transcript = self.output_text.get("1.0", "end-1c").strip()
+        if not transcript:
+            self.update_status("No transcript available to download as audio")
+            return
+
+        self.update_status("Generating TTS audio for download...")
+        try:
+            # Ensure TTS model is loaded
+            if not hasattr(self, "tts_model") or self.tts_model is None:
+                from models import build_model
+                self.tts_model = build_model("kokoro-v1_0.pth", self.device)
+
+            voice_name = self.voice_choice.get()
+            tts_speed = self.tts_speed.get()
+
+            # Split transcript into chunks (split by period)
+            all_chunks = [chunk.strip() for chunk in transcript.split(".") if chunk.strip()]
+            full_audio_chunks = []
+            for idx, chunk in enumerate(all_chunks):
+                if not chunk.endswith("."):
+                    chunk += "."
+                self.update_status(f"TTS: Generating chunk {idx+1} of {len(all_chunks)} for download...")
+                audio_result, _ = generate_speech(self.tts_model, chunk, voice=voice_name, speed=tts_speed)
+                if audio_result is None:
+                    self.update_status(f"TTS inference failed for chunk {idx+1}")
+                    continue
+                chunk_audio = audio_result.numpy()
+                full_audio_chunks.append(chunk_audio)
+
+            if not full_audio_chunks:
+                self.update_status("No audio generated from TTS inference")
+                return
+
+            import numpy as np
+            import soundfile as sf
+            import os
+
+            concatenated = np.concatenate(full_audio_chunks)
+            output_dir = os.path.join(os.getcwd(), "output")
+            os.makedirs(output_dir, exist_ok=True)
+            import time
+            timestamp = time.strftime("%Y%m%d-%H%M%S")
+            wav_path = os.path.join(output_dir, f"transcript_{timestamp}.wav")
+            mp3_path = os.path.splitext(wav_path)[0] + ".mp3"
+            sf.write(wav_path, concatenated, 24000)
+
+            # Always output only MP3
+            try:
+                from pydub import AudioSegment
+                audioseg = AudioSegment.from_wav(wav_path)
+                audioseg.export(mp3_path, format="mp3")
+                os.remove(wav_path)  # Remove the wav after mp3 is created
+                self.update_status(f"TTS audio saved as {os.path.basename(mp3_path)}")
+            except Exception as e:
+                self.update_status(f"Error saving MP3: {e}")
+
+        except Exception as e:
+            self.update_status(f"Error saving TTS audio: {e}")
 
     def load_last_used_ollama_model(self):
         config_file = os.path.join(os.path.expanduser("~"), ".antistentorian_last_model.txt")
