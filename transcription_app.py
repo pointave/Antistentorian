@@ -1071,7 +1071,7 @@ class CombinedTranscriptionApp:
         if ttml_files:
             ttml_file = ttml_files[0]
             self.update_status("TTML subtitles downloaded. Converting internally...")
-            output_file = self._convert_ttml_to_text(tttml_file)
+            output_file = self._convert_ttml_to_text(ttml_file)
             if output_file:
                 os.remove(ttml_file)  # Use consistent variable name "ttml_file"
             else:
