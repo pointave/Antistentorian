@@ -18,3 +18,4 @@ num2words  # For number to word conversion
 spacy  # For text processing 
 nemo_toolkit[asr]
 nvidia-pyindex
+ollama
