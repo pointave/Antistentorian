@@ -19,3 +19,4 @@ spacy  # For text processing
 nemo_toolkit[asr]
 nvidia-pyindex
 ollama
+flask
