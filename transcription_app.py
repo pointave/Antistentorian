@@ -9,6 +9,7 @@ import sounddevice as sd
 import soundfile as sf
 import numpy as np
 import torch
+import tkinter as tk
 from tkinter import Tk, Label, Button, Checkbutton, IntVar, StringVar, Frame, OptionMenu, filedialog, messagebox, Text, Scrollbar, DoubleVar, Scale, Entry
 from tkinterdnd2 import DND_FILES, TkinterDnD
 from faster_whisper import WhisperModel
@@ -39,11 +40,12 @@ class CombinedTranscriptionApp:
         self.include_timestamps = IntVar(value=0)
         self.open_file_after = IntVar(value=0)
         self.copy_to_clipboard = IntVar(value=1)
-        self.hotkey = StringVar(value="ctrl+shift+;")
+        self.hotkey = StringVar(value="alt+z")
         self.compute_type = StringVar(value="float16")
         self.model_size = StringVar(value="tiny")  ####  (value="parakeet-tdt")
         self.voice_choice = StringVar(value="af_aoede")  # New variable for voice selection
         self.tts_speed = DoubleVar(value=1.0)  # New variable for TTS speed
+        self.tts_auto_play = IntVar(value=0)  # Default: auto-play enabled
         
         # Recording variables
         self.recording = False
@@ -63,6 +65,11 @@ class CombinedTranscriptionApp:
         self.tts_playing = False
         self.stop_tts = False
         self.pause_tts = False  # <-- initialize pause flag
+        # Whisper server variables
+        self.whisper_server_port = StringVar(value="8002")
+        self.whisper_server_running = False
+        self.whisper_server_thread = None
+        self.whisper_server_process = None
         
         # Check GPU availability
         self.has_gpu = self.check_gpu()
@@ -147,7 +154,7 @@ class CombinedTranscriptionApp:
         Label(record_frame, text="Record", bg='#121212', fg='white').pack(side="left", padx=5)
         
         hotkey_menu = OptionMenu(record_frame, self.hotkey, 
-                            "ctrl+shift+;", "ctrl+shift+r", "alt+r", "ctrl+space")
+                            "alt+z", "ctrl+shift+;", "ctrl+shift+r", "alt+r", "ctrl+space")
         hotkey_menu.config(bg='#3700B3', fg='white')
         hotkey_menu["menu"].config(bg='#3700B3', fg='white')
         hotkey_menu.pack(side="left", padx=2)
@@ -213,6 +220,9 @@ class CombinedTranscriptionApp:
                     variable=self.tts_speed, bg='#121212', fg='white', highlightthickness=0)
         scale.pack(side="left", padx=5)
         
+        # Auto-play toggle
+        Checkbutton(tts_frame, text="Auto-Play Speech", variable=self.tts_auto_play,
+            bg='#121212', fg='white', selectcolor='#121212', font=("Arial", 10)).pack(side="left", padx=8)
         # Icon buttons for play and stop transcript
         Button(tts_frame, text="▶", command=self.play_transcript,
             bg='#3700B3', fg='white', font=("Arial", 12), width=3).pack(side="left", padx=2)
@@ -222,36 +232,63 @@ class CombinedTranscriptionApp:
         Button(tts_frame, text="Download Audio", command=self.download_tts_audio,
             bg='#3700B3', fg='white', font=("Arial", 10), width=14).pack(side="left", padx=5)
 
-    def get_ollama_models(self):
+    def get_llm_models(self):
         """
-        Query the Ollama API to get a list of available models.
-        Returns a list of model names.
+        Returns (ollama_models, lmstudio_models, llamacpp_models, all_models) for the dropdown.
+        LM Studio models are prefixed with 'lmstudio::' and llama.cpp models with 'llamacpp::' for disambiguation.
         """
+        ollama_models = []
+        lmstudio_models = []
+        llamacpp_models = []
         try:
-            response = requests.get('http://localhost:11434/api/tags')
+            response = requests.get('http://localhost:11434/api/tags', timeout=.1)
             if response.status_code == 200:
                 data = response.json()
                 if 'models' in data:
-                    return [model['name'] for model in data['models']]
-                return ['gemma3:latest']
-            return ['gemma3:latest']
+                    ollama_models = [model['name'] for model in data['models']]
+                else:
+                    ollama_models = ['gemma3:4b-it-qat']
         except Exception:
-            return ['gemma3:latest']
+            ollama_models = ['gemma3:4b-it-qat']
+        try:
+            response = requests.get('http://localhost:1234/v1/models', timeout=.1)
+            if response.status_code == 200:
+                models = response.json()
+                if isinstance(models, dict) and 'data' in models:
+                    lmstudio_models = [f"lmstudio::{m['id']}" for m in models['data']]
+                elif isinstance(models, list):
+                    lmstudio_models = [f"lmstudio::{m}" for m in models]
+        except Exception:
+            pass
+        try:
+            response = requests.get('http://localhost:8080/v1/models', timeout=.1)
+            if response.status_code == 200:
+                models = response.json()
+                if isinstance(models, dict) and 'data' in models:
+                    llamacpp_models = [f"llamacpp::{m['id']}" for m in models['data']]
+                elif isinstance(models, list):
+                    llamacpp_models = [f"llamacpp::{m}" for m in models]
+        except Exception:
+            pass
+        all_models = ollama_models + lmstudio_models + llamacpp_models
+        return ollama_models, lmstudio_models, llamacpp_models, all_models
 
     def refresh_ollama_models(self):
-        """Refresh the Ollama model dropdown with the current list from the server."""
+        """Refresh the LLM model dropdown with the current list from Ollama, LM Studio, and llama.cpp."""
         current_model = self.ollama_choice.get()
-        models = self.get_ollama_models()
-        # Update the OptionMenu items:
+        ollama_models, lmstudio_models, llamacpp_models, all_models = self.get_llm_models()
         self.ollama_option_menu['menu'].delete(0, 'end')
-        for model in models:
+        for model in all_models:
             self.ollama_option_menu['menu'].add_command(label=model, command=lambda m=model: self.ollama_choice.set(m))
-        # Reset the selection:
-        if current_model in models:
+        if current_model in all_models:
             self.ollama_choice.set(current_model)
         else:
-            self.ollama_choice.set(models[0])
-        self.update_status("Ollama models refreshed")
+            self.ollama_choice.set(all_models[0])
+        self.ollama_models = ollama_models
+        self.lmstudio_models = lmstudio_models
+        self.llamacpp_models = llamacpp_models
+        self.all_llm_models = all_models
+        self.update_status("LLM models refreshed (Ollama + LM Studio + llama.cpp)")
 
     def create_ollama_and_api_section(self, parent):
         """Create a row with Ollama controls (left) and API server controls (right)"""
@@ -265,12 +302,12 @@ class CombinedTranscriptionApp:
         Label(ollama_frame, text="Ollama Controls:", bg='#121212',
             fg='white', font=("Arial", 10, "bold")).pack(side="left", padx=5)
 
-        models = self.get_ollama_models()
+        ollama_models, lmstudio_models, llamacpp_models, all_models = self.get_llm_models()
         last_model = self.load_last_used_ollama_model()
-        default_model = last_model if last_model in models else models[0]
+        default_model = last_model if last_model in all_models else all_models[0]
         self.ollama_choice = StringVar(value=default_model)
         self.ollama_choice.trace_add('write', self._ollama_choice_changed)
-        self.ollama_option_menu = OptionMenu(ollama_frame, self.ollama_choice, *models)
+        self.ollama_option_menu = OptionMenu(ollama_frame, self.ollama_choice, *all_models)
         self.ollama_option_menu.config(bg='#3700B3', fg='white')
         self.ollama_option_menu["menu"].config(bg='#3700B3', fg='white')
         self.ollama_option_menu.pack(side="left", padx=5)
@@ -284,96 +321,270 @@ class CombinedTranscriptionApp:
         Button(ollama_frame, text="⟳", command=self.refresh_ollama_models,
             bg='#3700B3', fg='white', font=("Arial", 10), width=2).pack(side="left", padx=5)
 
-        # API server controls (right)
+        # Whisper server controls (right)
         api_frame = Frame(row_frame, bg='#121212')
         api_frame.pack(side="right", fill="x", expand=True)
 
-        Label(api_frame, text="API Server:", bg='#121212',
+        Label(api_frame, text="", bg='#121212',
             fg='white', font=("Arial", 10, "bold")).pack(side="left", padx=5)
 
-        # API URL Entry (read-only, full width, easy to copy)
-        # For OpenAI Speech API, the endpoint should be something like:
-        # https://api.openai.com/v1/audio/speech
-        # or for local OpenWebUI, it must support the OpenAI API spec.
-        # If OpenWebUI is not proxying the /v1/audio/speech endpoint, it will not work.
-        self.api_url = StringVar(value="http://localhost:8002/v1/audio/speech")
-        self.api_url_entry = Entry(api_frame, textvariable=self.api_url, width=40,
+        # Port configuration
+        Label(api_frame, text="Port:", bg='#121212', fg='white').pack(side="left", padx=5)
+        self.port_entry = Entry(api_frame, textvariable=self.whisper_server_port, width=6,
+                               bg='#1E1E1E', fg='white', insertbackground='white', relief="flat", font=("Arial", 10))
+        self.port_entry.pack(side="left", padx=2)
+        
+        # Server control button
+        self.server_button = Button(api_frame, text="Start Server", command=self.toggle_whisper_server,
+            bg='#4CAF50', fg='white', width=12)
+        self.server_button.pack(side="left", padx=5)
+        
+        # API URL display (updates based on port)
+        self.api_url = StringVar(value=f"http://localhost:{self.whisper_server_port.get()}/v1/audio/speech")
+        self.api_url_entry = Entry(api_frame, textvariable=self.api_url, width=35,
                                    bg='#1E1E1E', fg='white', readonlybackground='#1E1E1E',
                                    state="readonly", relief="flat", font=("Arial", 10))
         self.api_url_entry.pack(side="left", padx=5, fill="x", expand=True)
 
         Button(api_frame, text="Copy URL", command=lambda: pyperclip.copy(self.api_url.get()),
             bg='#3700B3', fg='white').pack(side="left", padx=5)
+        
+        # Update URL when port changes
+        self.whisper_server_port.trace_add('write', self._update_api_url)
 
-    def update_api_url(self, url):
-        """Update the API URL entry (call this if the URL changes)"""
-        self.api_url.set(url)
+    def _update_api_url(self, *args):
+        """Update the API URL when port changes"""
+        port = self.whisper_server_port.get()
+        self.api_url.set(f"http://localhost:{port}/v1/audio/speech")
+
+    def toggle_whisper_server(self):
+        """Start or stop the Whisper server"""
+        if self.whisper_server_running:
+            self.stop_whisper_server()
+        else:
+            self.start_whisper_server()
+
+    def start_whisper_server(self):
+        """Start the Whisper server on the specified port"""
+        if self.whisper_server_running:
+            self.update_status("Whisper server is already running")
+            return
+            
+        try:
+            port = self.whisper_server_port.get()
+            if not port.isdigit() or int(port) < 1 or int(port) > 65535:
+                self.update_status("Invalid port number. Please enter a valid port (1-65535)")
+                return
+                
+            self.update_status(f"Starting Whisper server on port {port}...")
+            
+            # Create a simple Flask server for Whisper API
+            server_script = self._create_whisper_server_script()
+            
+            # Start the server in a subprocess
+            import sys
+            python_executable = sys.executable
+            self.whisper_server_process = subprocess.Popen(
+                [python_executable, "-c", server_script],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True
+            )
+            
+            # Give the server a moment to start
+            self.root.after(2000, self._check_whisper_server_status)
+            
+        except Exception as e:
+            self.update_status(f"Error starting Whisper server: {e}")
+
+    def stop_whisper_server(self):
+        """Stop the Whisper server"""
+        if not self.whisper_server_running:
+            self.update_status("Whisper server is not running")
+            return
+            
+        try:
+            if self.whisper_server_process:
+                self.whisper_server_process.terminate()
+                self.whisper_server_process.wait(timeout=5)
+                self.whisper_server_process = None
+                
+            self.whisper_server_running = False
+            self.server_button.config(text="Start Server", bg='#4CAF50')
+            self.update_status("Whisper server stopped")
+            
+        except Exception as e:
+            self.update_status(f"Error stopping Whisper server: {e}")
+
+    def _check_whisper_server_status(self):
+        """Check if the Whisper server started successfully"""
+        try:
+            port = self.whisper_server_port.get()
+            response = requests.get(f"http://localhost:{port}/", timeout=2)
+            if response.status_code == 200:
+                self.whisper_server_running = True
+                self.server_button.config(text="Stop Server", bg='#FF0000')
+                self.update_status(f"Whisper server running on port {port}")
+            else:
+                self.update_status("Whisper server failed to start properly")
+        except Exception:
+            self.update_status("Whisper server failed to start - check if port is available")
+
+    def _create_whisper_server_script(self):
+        """Create a simple Flask server script for Whisper API"""
+        port = self.whisper_server_port.get()
+        script = f'''
+import sys
+sys.path.insert(0, r"{sys.path[0]}")
+from flask import Flask, request, jsonify
+import torch
+import tempfile
+import os
+from faster_whisper import WhisperModel
+import soundfile as sf
+import numpy as np
+from pydub import AudioSegment
+import threading
+import time
+
+app = Flask(__name__)
+model = None
+model_lock = threading.Lock()
+
+def load_model():
+    global model
+    with model_lock:
+        if model is None:
+            device = "cuda" if torch.cuda.is_available() else "cpu"
+            model = WhisperModel("tiny", device=device, compute_type="float16")
+            print("Whisper model loaded")
+
+@app.route("/", methods=["GET"])
+def health_check():
+    return jsonify({{"status": "healthy", "service": "whisper-server"}})
+
+@app.route("/v1/audio/transcriptions", methods=["POST"])
+def transcribe_audio():
+    if "file" not in request.files:
+        return jsonify({{"error": "No file provided"}}), 400
+    
+    file = request.files["file"]
+    if file.filename == "":
+        return jsonify({{"error": "No file selected"}}), 400
+    
+    try:
+        # Save uploaded file temporarily
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as temp_file:
+            # Convert to WAV if needed
+            audio = AudioSegment.from_file(file)
+            audio = audio.set_channels(1).set_frame_rate(16000)
+            audio.export(temp_file.name, format="wav")
+            temp_path = temp_file.name
+        
+        # Transcribe
+        load_model()
+        with model_lock:
+            segments, info = model.transcribe(temp_path, beam_size=5)
+            
+        transcription = ""
+        for segment in segments:
+            transcription += segment.text + " "
+        
+        # Clean up
+        os.unlink(temp_path)
+        
+        return jsonify({{"text": transcription.strip()}})
+        
+    except Exception as e:
+        return jsonify({{"error": str(e)}}), 500
+
+if __name__ == "__main__":
+    print(f"Starting Whisper server on port {port}")
+    app.run(host="0.0.0.0", port={port}, debug=False)
+'''
+        return script
 
     def summarize_text(self):
-        """Summarize the transcript in the text box using the selected Ollama model"""
+        """Summarize the transcript in the text box using the selected LLM model"""
         transcript = self.output_text.get("1.0", "end-1c").strip()
         if not transcript:
             self.update_status("No transcript available for summary")
             return
 
-        self.update_status("Summarizing transcript using Ollama...")
+        self.update_status("Summarizing transcript using LLM...")
         try:
-            summary = self.call_ollama_summary(transcript, self.ollama_choice.get())
+            summary = self.call_llm_custom_command(transcript, "Summarize the following text.")
             self.output_text.delete("1.0", "end")
             self.output_text.insert("1.0", summary)
-            self.update_status("Transcript summarized using Ollama")
+            self.update_status("Transcript summarized using LLM")
         except Exception as e:
             self.update_status(f"Error summarizing: {e}")
 
-    def call_ollama_summary(self, text, model):
+    def call_llm_custom_command(self, text, command):
         """
-        Calls the Ollama API to generate a summary of the transcript.
-        Requires the 'ollama' package and a running Ollama server.
+        Calls the selected LLM (Ollama, LM Studio, or llama.cpp) to process the given text according to the custom command.
         """
-        try:
-            from ollama import chat
-            response = chat(
-                model=model,
-                messages=[
-                    {"role": "system", "content": "You are an expert summarizer."},
-                    {"role": "user", "content": text}
+        selected = self.ollama_choice.get()
+        # LM Studio models are prefixed with 'lmstudio::'
+        if selected.startswith('lmstudio::'):
+            # Call LM Studio OpenAI-compatible API
+            model = selected[len('lmstudio::'):]
+            url = 'http://localhost:1234/v1/chat/completions'
+            headers = {'Content-Type': 'application/json'}
+            payload = {
+                "model": model,
+                "messages": [
+                    {"role": "system", "content": "You are a helpful assistant. Respond in plain text with proper punctuation. Use periods, commas, and other standard punctuation naturally. Keep responses clear and well-structured."},
+                    {"role": "user", "content": f"Process the following text as per the instruction below.\n\nText:\n{text}\n\nInstruction:\n{command}"}
                 ]
-            )
-            return response['message']['content']
-        except Exception as e:
-            self.update_status(f"Error calling Ollama API: {e}")
-            return f"Error summarizing transcript: {e}"
+            }
+            try:
+                response = requests.post(url, json=payload, headers=headers, timeout=30)
+                response.raise_for_status()
+                data = response.json()
+                return data['choices'][0]['message']['content']
+            except Exception as e:
+                raise RuntimeError(f"LM Studio API error: {e}")
+        # llama.cpp models are prefixed with 'llamacpp::'
+        elif selected.startswith('llamacpp::'):
+            # Call llama.cpp OpenAI-compatible API
+            model = selected[len('llamacpp::'):]
+            url = 'http://localhost:8080/v1/chat/completions'
+            headers = {'Content-Type': 'application/json'}
+            payload = {
+                "model": model,
+                "messages": [
+                    {"role": "system", "content": "You are a helpful assistant. Respond in plain text with proper punctuation. Use periods, commas, and other standard punctuation naturally. Keep responses clear and well-structured."},
+                    {"role": "user", "content": f"Process the following text as per the instruction below.\n\nText:\n{text}\n\nInstruction:\n{command}"}
+                ]
+            }
+            try:
+                response = requests.post(url, json=payload, headers=headers, timeout=30)
+                response.raise_for_status()
+                data = response.json()
+                return data['choices'][0]['message']['content']
+            except Exception as e:
+                raise RuntimeError(f"llama.cpp API error: {e}")
+        else:
+            # Default to Ollama
+            try:
+                from ollama import chat
+                response = chat(
+                    model=selected,
+                    messages=[
+                        {"role": "system", "content": "You are a helpful assistant. Format your response as plain text only - no markdown, bullet points, headings, asterisks, hash symbols, or colons. Use simple punctuation that works well with text-to-speech."},
+                        {"role": "user", "content": f"Process the following text as per the instruction below.\n\nText:\n{text}\n\nInstruction:\n{command}"}
+                    ]
+                )
+                return response['message']['content']
+            except Exception as e:
+                raise RuntimeError(f"Ollama API error: {e}")
 
-    def create_text_output_section(self, parent):
-        # Create a frame for text output section
-        text_frame = Frame(parent, bg='#121212', bd=2, relief="groove")
-        text_frame.pack(fill="both", expand=True, pady=5)
-        
-        # Updated: Custom command section with Run and Clear buttons
-        header_frame = Frame(text_frame, bg='#121212')
-        header_frame.pack(fill="x", padx=5, pady=5)
-        Label(header_frame, text="Custom Command:", bg='#121212', fg='white', font=("Arial", 10, "bold")).pack(side="left", padx=5)
-        self.custom_command_entry = Entry(header_frame, bg='#1E1E1E', fg='white', insertbackground='white')
-        self.custom_command_entry.pack(side="left", fill="x", expand=True, padx=5)
-        Button(header_frame, text="Run", command=self.run_custom_command, bg='#3700B3', fg='white').pack(side="left", padx=5)
-        Button(header_frame, text="Clear", command=self.clear_ollama_memory, bg='#3700B3', fg='white').pack(side="left", padx=5)
-        
-        # Create a frame for the actual transcript text box and scrollbar
-        text_box_frame = Frame(text_frame, bg='#121212')
-        text_box_frame.pack(fill="both", expand=True, padx=5, pady=5)
-        
-        scrollbar = Scrollbar(text_box_frame)
-        scrollbar.pack(side="right", fill="y")
-        
-        self.output_text = Text(text_box_frame, bg='#1E1E1E', fg='#FFFFFF',
-                            insertbackground='white', wrap="word", yscrollcommand=scrollbar.set, undo=True)
-        self.output_text.pack(side="left", fill="both", expand=True)
-        scrollbar.config(command=self.output_text.yview)
 
     def run_bullet_points_command(self):
         """
         Generate bullet-pointed main topics from the current transcript.
-        Uses the Ollama API with a preset instruction.
+        Uses the LLM API with a preset instruction.
         """
         current_text = self.output_text.get("1.0", "end-1c")
         if not current_text:
@@ -382,7 +593,7 @@ class CombinedTranscriptionApp:
         instruction = "Extract the main topics from the following text and list them. Dont begin your response with anything but the summary. make sure each sentence ends with a period."
         self.update_status("Generating bullet points for main topics via LLM...")
         try:
-            new_text = self.call_ollama_custom_command(current_text, instruction)
+            new_text = self.call_llm_custom_command(current_text, instruction)
             self.output_text.delete("1.0", "end")
             self.output_text.insert("1.0", new_text)
             self.update_status("Bullet points generated successfully.")
@@ -403,58 +614,77 @@ class CombinedTranscriptionApp:
         Run a custom command on the current transcript from the text box.
         The entered command is first attempted to be evaluated as a Python expression
         using the variable 'text' (i.e. the current transcript). For example: text.upper()
-        If a SyntaxError is raised (e.g. for LLM-like natural language prompts such as
-        'translate this into german'), it falls back to using the Ollama API.
+        If any error occurs (including NameError), it falls back to using the LLM API.
         """
         command = self.custom_command_entry.get().strip()
-        if not command:
-            self.update_status("No command provided.")
+        
+        # Special command to clear LLM memory (accepts both /clear and just /)
+        if command.lower() in ("/clear", "/"):
+            self.clear_ollama_memory()
+            self.output_text.delete("1.0", "end")
+            self.custom_command_entry.delete(0, 'end')
+            self.update_status("Output and LLM memory cleared.")
             return
+
         current_text = self.output_text.get("1.0", "end-1c")
+        
         try:
-            # Attempt to evaluate the command as Python code
-            new_text = eval(command, {"__builtins__": {}}, {"text": current_text})
-            if isinstance(new_text, str):
-                self.output_text.delete("1.0", "end")
-                self.output_text.insert("1.0", new_text)
-                self.update_status("Custom command executed successfully.")
-            else:
-                self.update_status("Result is not a string; no changes made.")
-        except SyntaxError:
-            # If a syntax error occurs, assume a natural language LLM command and use Ollama
+            # First try to evaluate as Python code (only if there's text to process)
+            if current_text:
+                try:
+                    # Use a dictionary as locals to prevent access to built-ins
+                    local_vars = {'text': current_text}
+                    result = eval(command, {"__builtins__": {}}, local_vars)
+                    
+                    # If we get here, the evaluation succeeded
+                    self.output_text.delete("1.0", "end")
+                    self.output_text.insert("1.0", str(result))
+                    self.custom_command_entry.delete(0, 'end')  # Clear the command entry
+                    self.update_status("Custom command executed as Python.")
+                    if self.tts_auto_play.get():
+                        self.play_transcript()
+                    return
+                        
+                except Exception as e:
+                    # If evaluation fails, try to execute as statements
+                    try:
+                        local_vars = {'text': current_text}
+                        exec(command, {"__builtins__": {}}, local_vars)
+                        result = local_vars.get('text', current_text)
+                        
+                        self.output_text.delete("1.0", "end")
+                        self.output_text.insert("1.0", str(result))
+                        self.custom_command_entry.delete(0, 'end')  # Clear the command entry
+                        self.update_status("Custom command executed as Python statements.")
+                        if self.tts_auto_play.get():
+                            self.play_transcript()
+                        return
+                            
+                    except Exception as e:
+                        # If execution also fails, fall through to LLM
+                        pass
+
+            # If we get here, either Python evaluation failed or there's no text, try LLM
             self.update_status("Interpreting command via LLM...")
             try:
-                new_text = self.call_ollama_custom_command(current_text, command)
+                new_text = self.call_llm_custom_command(current_text, command)
                 self.output_text.delete("1.0", "end")
                 self.output_text.insert("1.0", new_text)
+                self.custom_command_entry.delete(0, 'end')  # Clear the command entry
                 self.update_status("Custom command executed via LLM.")
+                if self.tts_auto_play.get():
+                    self.play_transcript()
             except Exception as e:
                 self.update_status(f"Error executing custom command via LLM: {e}")
+                
         except Exception as e:
             self.update_status(f"Error executing custom command: {e}")
-
-    def call_ollama_custom_command(self, text, command):
-        """
-        Calls the Ollama API to process the given text according to the custom command.
-        For example, if command is "translate this into german", the LLM should transform the text accordingly.
-        """
-        try:
-            from ollama import chat
-            response = chat(
-                model=self.ollama_choice.get(),  # Use selected Ollama model
-                messages=[
-                    {"role": "system", "content": "You are a helpful assistant."},
-                    {"role": "user", "content": f"Process the following text as per the instruction below.\n\nText:\n{text}\n\nInstruction:\n{command}"}
-                ]
-            )
-            return response['message']['content']
-        except Exception as e:
-            raise e
 
     def run_proofread_command(self):
         """
         Proofread and fix punctuation in the current transcript.
-        Uses the Ollama API with a preset instruction.
+        Uses the LLM API with a preset instruction.
+{{ ... }}
         """
         current_text = self.output_text.get("1.0", "end-1c")
         if not current_text:
@@ -463,20 +693,96 @@ class CombinedTranscriptionApp:
         instruction = "Proofread the following text and correct any punctuation errors, including fixing any excessive periods."
         self.update_status("Proofreading transcript via LLM...")
         try:
-            new_text = self.call_ollama_custom_command(current_text, instruction)
+            new_text = self.call_llm_custom_command(current_text, instruction)
             self.output_text.delete("1.0", "end")
             self.output_text.insert("1.0", new_text)
             self.update_status("Proofreading completed successfully.")
         except Exception as e:
             self.update_status(f"Error proofreading text: {e}")
 
+    def create_text_output_section(self, parent):
+        """Create the transcript text output section and custom command UI."""
+        text_frame = Frame(parent, bg='#121212', bd=2, relief="groove")
+        text_frame.pack(fill="both", expand=True, pady=5)
+        
+        # Custom command section with Run and Clear buttons
+        header_frame = Frame(text_frame, bg='#121212')
+        header_frame.pack(fill="x", padx=5, pady=5)
+        Label(header_frame, text="Custom Command:", bg='#121212', fg='white', font=("Arial", 10, "bold")).pack(side="left", padx=5)
+        # Create command entry with undo/redo support
+        self.command_history = []
+        self.command_history_index = -1
+        
+        self.custom_command_entry = Entry(header_frame, bg='#1E1E1E', fg='white', insertbackground='white')
+        self.custom_command_entry.pack(side="left", fill="x", expand=True, padx=5)
+        self.custom_command_entry.bind('<Return>', lambda event: self.run_custom_command())
+        
+        # Track changes for undo/redo
+        self.last_command = ""
+        self.custom_command_entry.bind('<Key>', self._track_command_changes)
+        
+        # Add undo/redo keyboard shortcuts
+        self.custom_command_entry.bind('<Control-z>', self._undo_command)
+        self.custom_command_entry.bind('<Control-y>', self._redo_command)
+        Button(header_frame, text="Run", command=self.run_custom_command, bg='#3700B3', fg='white', width=4).pack(side="left", padx=1)
+        Button(header_frame, text="Clr", command=self.clear_text, bg='#3700B3', fg='white', width=3).pack(side="left", padx=1)
+        Button(header_frame, text="↑", command=self.move_selected_to_command, bg='#4CAF50', fg='white', width=2).pack(side="left", padx=1)
+        
+        # Frame for transcript text box and scrollbar
+        text_box_frame = Frame(text_frame, bg='#121212')
+        text_box_frame.pack(fill="both", expand=True, padx=5, pady=5)
+        
+        scrollbar = Scrollbar(text_box_frame)
+        scrollbar.pack(side="right", fill="y")
+        
+        self.output_text = Text(text_box_frame, bg='#1E1E1E', fg='#FFFFFF',
+                            insertbackground='white', wrap="word", yscrollcommand=scrollbar.set, undo=True)
+        self.output_text.pack(side="left", fill="both", expand=True)
+        scrollbar.config(command=self.output_text.yview)
+
+    def _track_command_changes(self, event):
+        """Track changes to the command entry for undo/redo functionality"""
+        if event.keysym in ('Control_L', 'Control_R', 'Alt_L', 'Alt_R', 'Shift_L', 'Shift_R'):
+            return  # Skip modifier keys
+            
+        current = self.custom_command_entry.get()
+        if current != self.last_command:
+            # If we're not at the end of history, truncate the future history
+            if self.command_history_index < len(self.command_history) - 1:
+                self.command_history = self.command_history[:self.command_history_index + 1]
+            
+            # Add to history if it's different from the last saved state
+            if not self.command_history or current != self.command_history[-1]:
+                self.command_history.append(current)
+                self.command_history_index = len(self.command_history) - 1
+            
+            self.last_command = current
+    
+    def _undo_command(self, event):
+        """Handle Ctrl+Z for undoing command entry changes"""
+        if self.command_history_index > 0:
+            self.command_history_index -= 1
+            self.custom_command_entry.delete(0, 'end')
+            self.custom_command_entry.insert(0, self.command_history[self.command_history_index])
+            self.last_command = self.command_history[self.command_history_index]
+        return 'break'  # Prevent default behavior
+    
+    def _redo_command(self, event):
+        """Handle Ctrl+Y for redoing command entry changes"""
+        if self.command_history_index < len(self.command_history) - 1:
+            self.command_history_index += 1
+            self.custom_command_entry.delete(0, 'end')
+            self.custom_command_entry.insert(0, self.command_history[self.command_history_index])
+            self.last_command = self.command_history[self.command_history_index]
+        return 'break'  # Prevent default behavior
+    
     def create_control_section(self, parent):
         control_frame = Frame(parent, bg='#121212')
         control_frame.pack(fill="x", pady=5)
         
         Button(control_frame, text="Cancel Operation", command=self.cancel_operation,
             bg='#FF0000', fg='white').pack(side="left", padx=5)
-        Button(control_frame, text="Quit", command=self.root.quit,
+        Button(control_frame, text="Quit", command=self.quit_app,
             bg='#555555', fg='white').pack(side="right", padx=5)
     
     def update_status(self, message):
@@ -492,10 +798,112 @@ class CombinedTranscriptionApp:
         else:
             self.update_status("No text to copy")
     
+    def move_selected_to_command(self):
+        """Move selected text from output to command entry"""
+        try:
+            # Check if there's a text selection
+            try:
+                # This will raise an exception if no text is selected
+                selected_text = self.output_text.get("sel.first", "sel.last")
+                if not selected_text.strip():
+                    raise Exception("No text selected")
+                    
+                # Clear any existing selection in the output
+                self.output_text.tag_remove("sel", "1.0", "end")
+                # Set the command entry to the selected text
+                self.custom_command_entry.delete(0, 'end')
+                self.custom_command_entry.insert(0, selected_text.strip())
+                
+                # Update command history
+                if hasattr(self, 'command_history'):
+                    # Add to history if different from last command
+                    if not self.command_history or selected_text.strip() != (self.command_history[-1] if self.command_history else ""):
+                        self.command_history.append(selected_text.strip())
+                        self.command_history_index = len(self.command_history) - 1
+                        self.last_command = selected_text.strip()
+                        
+                self.custom_command_entry.focus_set()
+                self.update_status("Text moved to command")
+                
+            except tk.TclError:
+                # No text selected
+                self.update_status("No text selected")
+                
+        except Exception as e:
+            self.update_status(f"Error: {str(e)}")
+    
+    def clear_ollama_memory(self):
+        """Clear the LLM's conversation memory by sending a reset command"""
+        selected = self.ollama_choice.get()
+        if selected.startswith('lmstudio::'):
+            # For LM Studio, we can't directly clear memory, but we can send a reset message
+            model = selected[len('lmstudio::'):]
+            url = 'http://localhost:1234/v1/chat/completions'
+            headers = {'Content-Type': 'application/json'}
+            try:
+                # Send a system message to reset the conversation
+                payload = {
+                    "model": model,
+                    "messages": [{"role": "system", "content": "Conversation history cleared."}]
+                }
+                requests.post(url, json=payload, headers=headers, timeout=5)
+            except Exception:
+                pass  # Ignore errors when clearing memory
+        elif selected.startswith('llamacpp::'):
+            # For llama.cpp, we can't directly clear memory, but we can send a reset message
+            model = selected[len('llamacpp::'):]
+            url = 'http://localhost:8080/v1/chat/completions'
+            headers = {'Content-Type': 'application/json'}
+            try:
+                # Send a system message to reset the conversation
+                payload = {
+                    "model": model,
+                    "messages": [{"role": "system", "content": "Conversation history cleared."}]
+                }
+                requests.post(url, json=payload, headers=headers, timeout=5)
+            except Exception:
+                pass  # Ignore errors when clearing memory
+        else:
+            # For Ollama, we can't directly clear memory, but we can send a reset message
+            try:
+                from ollama import chat
+                chat(model=selected, messages=[{"role": "system", "content": "Conversation history cleared."}])
+            except Exception:
+                pass  # Ignore errors when clearing memory
+    
+    def quit_app(self):
+        """Clean quit that stops any running services"""
+        # Stop Whisper server if running
+        if self.whisper_server_running:
+            self.stop_whisper_server()
+        
+        # Stop any ongoing operations
+        self.cancel_operation()
+        
+        # Close the application
+        self.root.quit()
+        self.root.destroy()
+
     def clear_text(self):
         """Clear the text box"""
         self.output_text.delete("1.0", "end")
         self.update_status("Text cleared")
+        
+    def undo_text(self, widget):
+        """Handle undo action for text widgets"""
+        try:
+            widget.edit_undo()
+        except:
+            pass
+        return 'break'
+        
+    def redo_text(self, widget):
+        """Handle redo action for text widgets"""
+        try:
+            widget.edit_redo()
+        except:
+            pass
+        return 'break'
     
     def save_text_as(self):
         """Save the text content to a file"""
@@ -719,7 +1127,11 @@ class CombinedTranscriptionApp:
 
                 end_time = time.time()
                 self.update_status(f"Transcription completed in {end_time - start_time:.2f} seconds")
-                
+
+                # Auto-play TTS if enabled
+                if self.tts_auto_play.get():
+                    self.play_transcript()
+
                 if self.copy_to_clipboard.get():
                     pyperclip.copy(cleaned_transcript)
                     self.update_status("Transcription copied to clipboard")
